@@ -1,3 +1,6 @@
 python-telegram-bot
 flask
 python-dotenv
+google-genai
+httpx
+apscheduler
