@@ -92,9 +92,16 @@ if __name__ == "__main__":
         level=logging.INFO,
     )
     
-    # Arrancamos Flask en segundo plano para cumplir con Render
-    t = Thread(target=run_flask)
-    t.start()
+    # 1. Arrancamos Flask en segundo plano en el puerto que pide Render
+    port = int(os.environ.get("PORT", 10000))
+    flask_thread = Thread(target=lambda: app.run(host='0.0.0.0', port=port, debug=False, use_reloader=False))
+    flask_thread.daemon = True
+    flask_thread.start()
+    logger.info("Servidor web Flask iniciado en segundo plano.")
 
+    # 2. Corrimos el bot de Telegram en el hilo principal (vital para que funcione el polling)
+    logger.info("Iniciando bot de Telegram...")
+    application = build_application()
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
     # Arrancamos el bot de Telegram
     build_application().run_polling(allowed_updates=Update.ALL_TYPES)
