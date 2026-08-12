@@ -1,7 +1,7 @@
-import logging
 import os
-from threading import Thread
+import logging
 from flask import Flask
+from threading import Thread
 
 from telegram import Update
 from telegram.ext import (
@@ -24,9 +24,18 @@ from nutrition_bot.handlers import (
     send_scheduled_reminder,
 )
 
-
 logger = logging.getLogger(__name__)
 
+# 1. Servidor web obligatorio para que Render mantenga el servicio activo
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "El bot está vivo"
+
+def run_flask():
+    port = int(os.environ.get("PORT", 10000))
+    app.run(host='0.0.0.0', port=port)
 
 async def post_init(application: Application) -> None:
     bot_info = await application.bot.get_me()
@@ -35,13 +44,11 @@ async def post_init(application: Application) -> None:
         bot_info.username or bot_info.first_name or "sin_username",
     )
 
-
 def build_application() -> Application:
     settings = get_settings()
     if not settings.telegram_bot_token:
         raise RuntimeError(
-            "Falta TELEGRAM_BOT_TOKEN. Conecta Telegram y guarda el token como "
-            "secreto antes de iniciar el bot."
+            "Falta TELEGRAM_BOT_TOKEN. Configura la variable de entorno en Render."
         )
 
     nutrition_service = GeminiNutritionService(settings)
@@ -70,27 +77,11 @@ def build_application() -> Application:
 
     if application.job_queue is None:
         raise RuntimeError(
-            "JobQueue no está disponible. Instala python-telegram-bot[job-queue]."
+            "JobQueue no está disponible."
         )
     application.job_queue.scheduler.timezone = settings.timezone
     application.bot_data["scheduled_reminder_callback"] = send_scheduled_reminder
     return application
-
-
-# Configuración del servidor Flask para el puerto dinámico de Render
-app = Flask('')
-
-@app.route('/')
-def home():
-    return "El bot está vivo"
-
-def run():
-    port = int(os.environ.get("PORT", 8080))
-    app.run(host='0.0.0.0', port=port)
-
-def keep_alive():
-    t = Thread(target=run)
-    t.start()
 
 
 if __name__ == "__main__":
@@ -101,9 +92,9 @@ if __name__ == "__main__":
         level=logging.INFO,
     )
     
-    # 1. Iniciamos Flask primero para abrir el puerto web que exige Render
-    keep_alive()
+    # Arrancamos Flask en segundo plano para cumplir con Render
+    t = Thread(target=run_flask)
+    t.start()
 
-    # 2. Luego arrancamos el bot de Telegram
+    # Arrancamos el bot de Telegram
     build_application().run_polling(allowed_updates=Update.ALL_TYPES)
-  
