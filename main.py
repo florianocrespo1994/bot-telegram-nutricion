@@ -47,28 +47,44 @@ def run_flask():
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "¡Hola! Soy tu asistente de nutrición y actividad física. 🥑🎾\n"
-        "Mandame un mensaje describiendo lo que comiste o la actividad física que realizaste, "
+        "Mandame un mensaje, foto o audio describiendo lo que comiste o tu entrenamiento, "
         "y lo procesamos al instante."
     )
 
 # --- LÓGICA DEL BOT CONECTADA A TU GEMINI SERVICE ---
 
 async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text_input = update.message.text or update.message.caption
-    if not text_input:
-        await update.message.reply_text("Por favor, enviá texto o una descripción.")
-        return
+    message = update.message
+    text_input = message.text or message.caption or ""
+    
+    service: GeminiNutritionService = context.application.bot_data["nutrition_service"]
+    file_bytes = None
 
-    # 1. Blindaje conversacional: Si el mensaje es muy corto, pedimos más detalles con buena onda
-    if len(text_input.strip()) < 15:
-        await update.message.reply_text(
+    # 1. Si envía una FOTO
+    if message.photo:
+        await message.reply_text("👀 Analizando la imagen enviada... Un momento.")
+        photo_file = await message.photo[-1].get_file()
+        file_bytes = await photo_file.download_as_bytearray()
+        if not text_input:
+            text_input = "Analiza los alimentos, bebidas o contexto de esta imagen y calcula las calorías y macronutrientes correspondientes."
+
+    # 2. Si envía un AUDIO / NOTA DE VOZ
+    elif message.voice or message.audio:
+        await message.reply_text("🎧 Escuchando tu nota de voz...")
+        voice_file = await message.voice.get_file() if message.voice else await message.audio.get_file()
+        file_bytes = await voice_file.download_as_bytearray()
+        text_input = text_input or "Procesa esta nota de voz donde describo mi ingesta alimentaria o actividad física."
+
+    # 3. Blindaje conversacional si el texto es muy corto y no hay archivos multimedia
+    elif len(text_input.strip()) < 15 and not file_bytes:
+        await message.reply_text(
             "¡Qué buena energía! Contame un poco más así puedo registrarlo mejor. "
             "¿Qué comiste específicamente o qué ejercicio hiciste y cuánto tiempo duró? 🎾🍎"
         )
         return
 
-    service: GeminiNutritionService = context.application.bot_data["nutrition_service"]
-    req = GeminiInput(text=text_input)
+    # Creamos el input soportando tanto texto como bytes multimedia
+    req = GeminiInput(text=text_input, media_bytes=file_bytes)
 
     try:
         ai_response = await service.analyze(req)
@@ -76,7 +92,7 @@ async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Guardamos el análisis en el contexto temporalmente
         context.user_data["pending_analysis"] = ai_response
 
-        await update.message.reply_text(
+        await message.reply_text(
             f"📋 *Análisis del Asistente:*\n\n{ai_response}\n\n¿Registramos esto en tu balance diario?",
             reply_markup=InlineKeyboardMarkup([
                 [
@@ -91,7 +107,7 @@ async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     except Exception as e:
         logger.error(f"Error procesando con Gemini: {e}")
-        await update.message.reply_text(
+        await message.reply_text(
             "¡Entendido! Lo estuve procesando, pero por favor describime un poquito más el plato o el entrenamiento (con cantidades o tiempo aproximado) para que el balance sea exacto. 💪"
         )
 
@@ -213,7 +229,10 @@ def build_application():
     application.add_handler(CommandHandler("balance", balance_command))
     application.add_handler(CommandHandler("balancegeneral", balance_general_command))
     application.add_handler(CommandHandler("reporte", reporte_command))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_input))
+    
+    # Manejador actualizado para escuchar Texto, Fotos y Notas de Voz (Audios)
+    application.add_handler(MessageHandler((filters.TEXT | filters.PHOTO | filters.VOICE | filters.AUDIO) & ~filters.COMMAND, handle_input))
+    
     application.add_handler(CallbackQueryHandler(button_callback))
     
     return application
