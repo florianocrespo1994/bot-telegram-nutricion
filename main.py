@@ -1,6 +1,7 @@
 import os
 import json
 import logging
+import re
 from datetime import datetime
 from flask import Flask
 from threading import Thread
@@ -27,6 +28,11 @@ def get_db(file):
 def save_db(file, data):
     with open(file, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
+
+def extraer_calorias(texto):
+    """Extrae el primer número seguido de 'kcal' o 'calorías' del texto de Gemini"""
+    match = re.search(r'(\d+)\s*(?:kcal|calorías|cal)', texto, re.IGNORECASE)
+    return int(match.group(1)) if match else 0
 
 # --- SERVIDOR FLASK (RENDER) ---
 app = Flask('')
@@ -84,21 +90,29 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     
     if query.data == "confirm":
-        context.user_data.pop("pending_analysis", None)
+        analisis = context.user_data.pop("pending_analysis", "")
         today = datetime.now().strftime("%Y-%m-%d")
         user_id = str(query.from_user.id)
         
+        kcal_detectadas = extraer_calorias(analisis)
         logs = get_db(LOGS_FILE)
+        
         if user_id not in logs: logs[user_id] = {}
         if today not in logs[user_id]: 
             logs[user_id][today] = {"kcal_ing": 0, "kcal_quemadas": 0}
         
-        # Nota: Aquí sumamos de forma inteligente según lo que arroje el análisis 
-        # (puedes ajustar los valores según los números extraídos de la respuesta de Gemini)
-        logs[user_id][today]["kcal_ing"] += 300  # Valor base estimado o parseado
+        # Clasificación automática según el contenido del análisis de la IA
+        texto_lower = analisis.lower()
+        if any(palabra in texto_lower for palabra in ["quemada", "entrenamiento", "actividad", "deporte", "minutos", "horas", "squash", "running"]):
+            logs[user_id][today]["kcal_quemadas"] += kcal_detectadas
+            tipo_msj = f"🔥 {kcal_detectadas} kcal quemadas registradas."
+        else:
+            logs[user_id][today]["kcal_ing"] += kcal_detectadas
+            tipo_msj = f"🍽️ {kcal_detectadas} kcal ingeridas registradas."
+            
         save_db(LOGS_FILE, logs)
         
-        await query.edit_message_text("✅ ¡Guardado con éxito en tu balance diario! 🚀", parse_mode="Markdown")
+        await query.edit_message_text(f"✅ ¡Guardado con éxito! ({tipo_msj}) 🚀", parse_mode="Markdown")
     
     elif query.data == "edit":
         await query.edit_message_text("✏️ Entendido. Escribime la descripción corregida:")
@@ -124,27 +138,40 @@ async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_profile = profiles.get(user_id, {})
     user_log = logs.get(user_id, {}).get(today, {"kcal_ing": 0, "kcal_quemadas": 0})
     
-    # Extraer datos reales del perfil o usar valores por defecto clínicos
     kcal_objetivo = user_profile.get("kcal_objetivo", 2200)
     kcal_ing = user_log["kcal_ing"]
     kcal_quemadas = user_log["kcal_quemadas"]
-    balance_neto = kcal_ing - kcal_quemadas
-    diferencia = balance_neto - kcal_objetivo
+    
+    # Cálculo solicitado: Ingeridas - Quemadas (Balance diario neto)
+    balance_diario = kcal_ing - kcal_quemadas
     
     await update.message.reply_text(
         f"📊 *Balance Diario ({today})*\n\n"
-        f"• *Total de Kcal Ingeridas:* {kcal_ing} kcal\n"
-        f"• *Kcal Objetivo:* {kcal_objetivo} kcal _(según tu perfil y objetivo)_\n"
-        f"• *Kcal Quemadas:* {kcal_quemadas} kcal\n\n"
-        f"⚖️ *Balance Calórico Final:* {diferencia:+d} kcal\n"
-        f"_({ 'Déficit' if diferencia < 0 else 'Superávit' })_",
+        f"• *Kcal diarias objetivo:* {kcal_objetivo} kcal\n"
+        f"• *Kcal ingeridas:* {kcal_ing} kcal\n"
+        f"• *Kcal quemadas:* {kcal_quemadas} kcal\n\n"
+        f"⚖️ *Balance diario (Ingeridas - Quemadas):* {balance_diario:+d} kcal",
         parse_mode="Markdown"
     )
 
 async def balance_general_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+    profiles = get_db(PROFILES_FILE)
+    logs_user = get_db(LOGS_FILE).get(user_id, {})
+    
+    profile = profiles.get(user_id, {})
+    kcal_objetivo = profile.get("kcal_objetivo", 2200)
+    
+    total_ing = sum(d.get("kcal_ing", 0) for d in logs_user.values())
+    total_quem = sum(d.get("kcal_quemadas", 0) for d in logs_user.values())
+    balance_neto_total = total_ing - total_quem
+    
     await update.message.reply_text(
-        "📈 *Balance General del Mes*\n\n"
-        "Tus registros muestran una tendencia estable acorde a tus objetivos cardiovasculares y nutricionales.",
+        f"📈 *Balance General (Acumulado Mensual)*\n\n"
+        f"• *Kcal Objetivo Promedio/Diario:* {kcal_objetivo} kcal\n"
+        f"• *Total Kcal Ingeridas (Mes):* {total_ing} kcal\n"
+        f"• *Total Kcal Quemadas (Mes):* {total_quem} kcal\n\n"
+        f"⚖️ *Balance Neto Total (Ingeridas - Quemadas):* {balance_neto_total:+d} kcal",
         reply_markup=InlineKeyboardMarkup([
             [InlineKeyboardButton("📄 Descargar Reporte Completo", callback_data="download_report")]
         ]),
@@ -157,7 +184,7 @@ async def reporte_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f.write("REPORTE NUTRICIONAL Y METABÓLICO - DR. CRESPO\n")
         f.write("=============================================\n")
         f.write(f"Fecha de emisión: {datetime.now().strftime('%Y-%m-%d')}\n\n")
-        f.write("Detalle acumulado mensual de ingesta, gasto energético y adherencia al plan.\n")
+        f.write("Detalle acumulado mensual de ingesta, gasto energético y balance neto.\n")
     
     with open(filename, "rb") as f:
         await update.effective_message.reply_document(
