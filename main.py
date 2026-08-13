@@ -62,16 +62,19 @@ async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         # Llamada asincrónica real a tu servicio de Gemini
         ai_response = await service.analyze(req)
         
-        # Guardamos temporalmente el texto de la respuesta en el contexto por si confirma
+        # Guardamos temporalmente el texto de la respuesta en el contexto por si confirma o pide info extra
         context.user_data["pending_analysis"] = ai_response
 
-        # Respondemos de forma limpia con los botones de validación que pediste
+        # Respondemos de forma limpia con los botones de validación y el nuevo botón de Tip Médico
         await update.message.reply_text(
             f"📋 *Análisis del Asistente:*\n\n{ai_response}\n\n¿Estás de acuerdo con este registro?",
             reply_markup=InlineKeyboardMarkup([
                 [
                     InlineKeyboardButton("✅ Confirmar", callback_data="confirm"),
                     InlineKeyboardButton("✏️ Editar", callback_data="edit")
+                ],
+                [
+                    InlineKeyboardButton("👨‍⚕️ Más Info / Tip Médico", callback_data="med_tip")
                 ]
             ]),
             parse_mode="Markdown"
@@ -101,6 +104,20 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     elif query.data == "edit":
         await query.edit_message_text("✏️ Entendido. Escribime la descripción corregida:")
+
+    elif query.data == "med_tip":
+        # Opción para ponerse la bata de médico y dar información complementaria
+        last_analysis = context.user_data.get("pending_analysis", "este alimento")
+        
+        # Opcional: Podrías hacer otra consulta rápida a Gemini pidiéndole el tip, o estructurarlo directo:
+        tip_text = (
+            "👨‍⚕️ *Perspectiva Médica y Nutricional:*\n\n"
+            "Analizando la densidad calórica y el perfil de macronutrientes de lo ingresado, "
+            "es importante evaluar el timing de los alimentos en relación con tu gasto energético diario y tu fase metabólica actual. "
+            "Priorizar alimentos de alta densidad nutricional ayuda a mantener la saciedad sin comprometer tu objetivo.\n\n"
+            "*(Recordá que podés confirmar o editar tu registro más arriba)*"
+        )
+        await query.message.reply_text(tip_text, parse_mode="Markdown")
 
 async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logs = get_db(LOGS_FILE)
