@@ -66,7 +66,7 @@ async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if message.photo:
         await message.reply_text("👀 Analizando la imagen enviada... Un momento.")
         photo_file = await message.photo[-1].get_file()
-        file_bytes = await photo_file.download_as_bytearray()
+        file_bytes = bytes(await photo_file.download_as_bytearray())
         mime_type = "image/jpeg"
         media_label = "fotografía de alimentos o bebidas"
         if not text_input:
@@ -76,7 +76,7 @@ async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif message.voice or message.audio:
         await message.reply_text("🎧 Escuchando tu nota de voz...")
         voice_file = await message.voice.get_file() if message.voice else await message.audio.get_file()
-        file_bytes = await voice_file.download_as_bytearray()
+        file_bytes = bytes(await voice_file.download_as_bytearray())
         mime_type = "audio/ogg"
         media_label = "nota de voz del usuario"
         text_input = text_input or "Procesa esta nota de voz donde describo mi ingesta alimentaria o actividad física."
