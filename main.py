@@ -59,12 +59,16 @@ async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     service: GeminiNutritionService = context.application.bot_data["nutrition_service"]
     file_bytes = None
+    mime_type = None
+    media_label = None
 
     # 1. Si envía una FOTO
     if message.photo:
         await message.reply_text("👀 Analizando la imagen enviada... Un momento.")
         photo_file = await message.photo[-1].get_file()
         file_bytes = await photo_file.download_as_bytearray()
+        mime_type = "image/jpeg"
+        media_label = "fotografía de alimentos o bebidas"
         if not text_input:
             text_input = "Analiza los alimentos, bebidas o contexto de esta imagen y calcula las calorías y macronutrientes correspondientes."
 
@@ -73,6 +77,8 @@ async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await message.reply_text("🎧 Escuchando tu nota de voz...")
         voice_file = await message.voice.get_file() if message.voice else await message.audio.get_file()
         file_bytes = await voice_file.download_as_bytearray()
+        mime_type = "audio/ogg"
+        media_label = "nota de voz del usuario"
         text_input = text_input or "Procesa esta nota de voz donde describo mi ingesta alimentaria o actividad física."
 
     # 3. Blindaje conversacional si el texto es muy corto y no hay archivos multimedia
@@ -83,8 +89,13 @@ async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
         return
 
-    # Creamos el input soportando tanto texto como bytes multimedia
-    req = GeminiInput(text=text_input, media_bytes=file_bytes)
+    # Creamos el input estructurado compatible con tu gemini_service.py
+    req = GeminiInput(
+        text=text_input, 
+        media_bytes=file_bytes, 
+        mime_type=mime_type, 
+        media_label=media_label
+    )
 
     try:
         ai_response = await service.analyze(req)
