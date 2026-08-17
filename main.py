@@ -4,7 +4,7 @@ import logging
 import re
 import csv
 import io
-from datetime import datetime
+from datetime import datetime, timedelta
 from flask import Flask
 from threading import Thread
 
@@ -39,6 +39,10 @@ def extraer_calorias(texto):
     match = re.search(r'(\d+)\s*(?:kcal|calorías|cal)', texto, re.IGNORECASE)
     return int(match.group(1)) if match else 0
 
+def get_fecha_argentina():
+    # Desplazamos 3 horas (UTC-3) para asegurar la hora de Argentina
+    return (datetime.utcnow() - timedelta(hours=3)).strftime("%Y-%m-%d")
+
 # --- ESTADOS DEL ONBOARDING ---
 SEXO, EDAD, PESO, ALTURA, ACTIVIDAD, OBJETIVO, DEPORTE = range(7)
 
@@ -57,7 +61,7 @@ def run_flask():
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_keyboard = [['Hombre', 'Mujer']]
     await update.message.reply_text(
-        "¡Bienvenido! Soy tu asistente de nutrición y actividad física. 🥑🎾\n\n"
+        "¡Bienvenido! Soy tu asistente médico y deportivo. 🥑🎾\n\n"
         "Vamos a configurar tu perfil clínico para calcular tus requerimientos exactos.\n"
         "(Podés escribir /cancel en cualquier momento para salir).\n\n"
         "Para empezar, indicame tu *Sexo*:",
@@ -115,8 +119,10 @@ async def ask_objetivo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def ask_deporte(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['objetivo'] = update.message.text
+    # Lista de deportes actualizada con Cinta y Running
     reply_keyboard = [
         ['Squash', 'Tenis', 'Pádel'], 
+        ['Running', 'Cinta Correr', 'Cinta Inclinada'],
         ['Fútbol 11', 'Fútbol 5', 'Natación'],
         ['Baile', 'Saltar la cuerda', 'Boxeo'],
         ['Crossfit', 'Kick boxing', 'Judo'],
@@ -163,7 +169,7 @@ async def finish_onboarding(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• *Tasa Metabólica Basal:* ~{int(tmb)} kcal\n"
         f"• *Deporte:* {deporte}\n"
         f"🎯 *Tu objetivo calórico diario quedó seteado en: {kcal_objetivo} kcal*\n\n"
-        f"Ya podés empezar a enviarme fotos, audios o textos de tus comidas y entrenamientos. 💪"
+        f"Para ver todo lo que puedo hacer, escribí /guia 💪"
     )
     await update.message.reply_text(resumen, reply_markup=ReplyKeyboardRemove(), parse_mode="Markdown")
     return ConversationHandler.END
@@ -173,19 +179,124 @@ async def cancel_onboarding(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
-# --- COMANDOS AUXILIARES ---
+# --- COMANDOS AVANZADOS Y GUÍA ---
 
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    help_text = (
-        "🛠 *Comandos Disponibles:*\n\n"
-        "• /start - Configurar perfil y recalcular objetivo\n"
-        "• /balance - Muestra el balance diario neto\n"
-        "• /balancegeneral - Muestra acumulados y descarga Excel\n"
-        "• /setobjetivo <kcal> - Cambia tu meta de calorías manualmente\n"
-        "• /eliminarultimo - Deshace el último registro guardado de hoy\n"
-        "• /help - Muestra este menú"
+async def guia_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    guia_text = (
+        "📖 *GUÍA COMPLETA DEL BOT*\n\n"
+        "🗣 *¿Cómo registrar?*\n"
+        "Mandame un texto, foto o nota de voz diciendo qué comiste o cuánto entrenaste. Yo me encargo del resto.\n\n"
+        "⚡ *Comandos Estrella:*\n"
+        "• /quecomo - Te calculo cuántas calorías te faltan y te doy 2 opciones de comida para cerrar el día.\n"
+        "• /partidomanana - Sube tu objetivo de hoy (+350 kcal) para llenar los depósitos de glucógeno.\n"
+        "• /peso <kg> - Si bajaste o subiste (ej: /peso 74.5), recalculo todo tu metabolismo automáticamente.\n\n"
+        "📊 *Balance y Edición:*\n"
+        "• /balance - Muestra el balance diario.\n"
+        "• /balancegeneral - Acumulados mensuales y exporta Excel.\n"
+        "• /eliminarultimo - Deshace el último guardado de hoy.\n"
+        "• /setobjetivo <kcal> - Cambia tu meta manualmente."
     )
-    await update.message.reply_text(help_text, parse_mode="Markdown")
+    await update.message.reply_text(guia_text, parse_mode="Markdown")
+
+async def peso_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    try:
+        nuevo_peso = float(context.args[0].replace(',', '.'))
+        user_id = str(update.effective_user.id)
+        profiles = get_db(PROFILES_FILE)
+        
+        if user_id not in profiles:
+            await update.message.reply_text("Primero configurá tu perfil con /start")
+            return
+            
+        p = profiles[user_id]
+        p['peso'] = nuevo_peso
+        
+        # Recalcular TMB
+        tmb = (10 * nuevo_peso) + (6.25 * p['altura']) - (5 * p['edad'])
+        tmb += 5 if p['sexo'] == 'Hombre' else -161
+        multiplicadores = {'Sedentario': 1.2, 'Leve': 1.375, 'Moderado': 1.55, 'Intenso': 1.725}
+        gasto_diario = tmb * multiplicadores.get(p['actividad'], 1.2)
+        ajustes = {'Déficit Calorico': -500, 'Mantenimiento': 0, 'Volumen': 500}
+        nuevo_objetivo = int(gasto_diario + ajustes.get(p['objetivo'], 0))
+        
+        p['kcal_objetivo'] = nuevo_objetivo
+        save_db(PROFILES_FILE, profiles)
+        
+        await update.message.reply_text(f"⚖️ Peso actualizado a {nuevo_peso} kg.\n🎯 Tu nuevo objetivo diario se ajustó automáticamente a: *{nuevo_objetivo} kcal*.", parse_mode="Markdown")
+    except (IndexError, ValueError):
+        await update.message.reply_text("⚠️ Uso correcto: /peso 74.5")
+
+async def partidomanana_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+    today = get_fecha_argentina()
+    
+    profiles = get_db(PROFILES_FILE)
+    if user_id not in profiles:
+        await update.message.reply_text("Por favor, configurá tu perfil con /start primero.")
+        return
+        
+    objetivo_base = profiles[user_id].get("kcal_objetivo", 2200)
+    objetivo_partido = objetivo_base + 350
+    
+    logs = get_db(LOGS_FILE)
+    if user_id not in logs: logs[user_id] = {}
+    if today not in logs[user_id]: logs[user_id][today] = {}
+    
+    # Guardamos este objetivo especial solo para el día de hoy
+    logs[user_id][today]["objetivo_temporal"] = objetivo_partido
+    save_db(LOGS_FILE, logs)
+    
+    await update.message.reply_text(
+        f"🎾 *¡Protocolo Match Day Activado!*\n\n"
+        f"Preparando los depósitos de glucógeno para el partido de mañana.\n"
+        f"🎯 *Objetivo de hoy ajustado temporalmente a:* {objetivo_partido} kcal (+350 kcal).\n"
+        f"Te sugiero priorizar carbohidratos complejos en tu cena. ¡A romperla!",
+        parse_mode="Markdown"
+    )
+
+async def quecomo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+    today = get_fecha_argentina()
+    
+    profiles = get_db(PROFILES_FILE)
+    logs = get_db(LOGS_FILE)
+    
+    user_profile = profiles.get(user_id, {})
+    user_log = logs.get(user_id, {}).get(today, {})
+    
+    kcal_objetivo = user_log.get("objetivo_temporal", user_profile.get("kcal_objetivo", 2200))
+    kcal_ing = user_log.get("kcal_ing", 0)
+    kcal_quemadas = user_log.get("kcal_quemadas", 0)
+    
+    balance_diario = kcal_ing - kcal_quemadas
+    kcal_restantes = kcal_objetivo - balance_diario
+    
+    if kcal_restantes <= 50:
+        await update.message.reply_text("¡Ya alcanzaste tu objetivo de hoy! Preparate un buen mate y a descansar el cuerpo. 🧉")
+        return
+        
+    await update.message.reply_text(f"🔍 Buscando opciones exactas para tus {kcal_restantes} kcal restantes...", parse_mode="Markdown")
+    
+    service: GeminiNutritionService = context.application.bot_data["nutrition_service"]
+    
+    prompt_bot = (
+        f"Al usuario le faltan exactamente {kcal_restantes} kcal para cumplir su objetivo diario. "
+        "Brindale 2 opciones claras, deliciosas y nutritivas de comida real que sumen aproximadamente "
+        "esa cantidad de calorías. No uses etiquetas del sistema ocultas. Háblale directo como colega médico, "
+        "y detallale las 2 opciones con cantidades aproximadas y sus macros por encima."
+    )
+    
+    req = GeminiInput(text=prompt_bot, media_bytes=None, mime_type=None, media_label=None)
+    
+    try:
+        ai_response = await service.analyze(req)
+        # Limpieza por si Gemini intenta poner las etiquetas base
+        clean_response = re.sub(r'\[TIPO:.*?\]', '', ai_response)
+        clean_response = re.sub(r'\[TIP_MEDICO:.*?\]', '', clean_response).strip()
+        await update.message.reply_text(f"🍽️ *Opciones para cerrar tu día:*\n\n{clean_response}", parse_mode="Markdown")
+    except Exception as e:
+        logger.error(f"Error Gemini quecomo: {e}")
+        await update.message.reply_text("Hubo un error al buscar las recetas, pero te sugiero apuntar a proteínas magras para esa cantidad.")
 
 async def set_objetivo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -201,7 +312,7 @@ async def set_objetivo_command(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def eliminar_ultimo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = get_fecha_argentina()
     logs = get_db(LOGS_FILE)
     last_action = context.user_data.get("last_action")
     
@@ -306,7 +417,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if query.data == "confirm":
         analisis = context.user_data.pop("pending_analysis", "")
         tipo = context.user_data.pop("pending_tipo", "ingesta")
-        today = datetime.now().strftime("%Y-%m-%d")
+        today = get_fecha_argentina()
         user_id = str(query.from_user.id)
         
         kcal_detectadas = extraer_calorias(analisis)
@@ -332,7 +443,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         save_db(LOGS_FILE, logs)
         context.user_data["last_action"] = {"date": today, "tipo": tipo, "kcal": kcal_detectadas}
         
-        await query.edit_message_text(f"{analisis}\n\n✅ *{tipo_msj} en la base de datos.* 🚀", parse_mode="Markdown")
+        await query.edit_message_text(f"{analisis}\n\n✅ *{tipo_msj}.* 🚀", parse_mode="Markdown")
     
     elif query.data == "edit":
         context.user_data["esperando_edicion"] = True
@@ -342,15 +453,12 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         tip_text = context.user_data.get("pending_tip", "Consulta siempre a tu profesional de cabecera.")
         await query.message.reply_text(f"👨‍⚕️ *Perspectiva Médica y Metabólica:*\n\n{tip_text}", parse_mode="Markdown")
 
-    elif query.data == "download_report":
-        await reporte_command(update, context)
-
 
 # --- REPORTES Y BALANCE ---
 
 async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
-    today = datetime.now().strftime("%Y-%m-%d")
+    today = get_fecha_argentina()
     
     profiles = get_db(PROFILES_FILE)
     logs = get_db(LOGS_FILE)
@@ -358,7 +466,8 @@ async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_profile = profiles.get(user_id, {})
     user_log = logs.get(user_id, {}).get(today, {"kcal_ing": 0, "kcal_quemadas": 0})
     
-    kcal_objetivo = user_profile.get("kcal_objetivo", 2200)
+    # Toma el objetivo temporal del Match Day si existe, sino el de perfil
+    kcal_objetivo = user_log.get("objetivo_temporal", user_profile.get("kcal_objetivo", 2200))
     kcal_ing = user_log.get("kcal_ing", 0)
     kcal_quemadas = user_log.get("kcal_quemadas", 0)
     
@@ -367,11 +476,11 @@ async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(
         f"📊 *Balance Diario ({today})*\n\n"
-        f"• *Kcal diarias objetivo:* {kcal_objetivo} kcal\n"
-        f"• *Kcal ingeridas:* {kcal_ing} kcal\n"
-        f"• *Kcal quemadas:* {kcal_quemadas} kcal\n\n"
+        f"• *Objetivo de hoy:* {kcal_objetivo} kcal\n"
+        f"• *Ingeridas:* {kcal_ing} kcal\n"
+        f"• *Quemadas:* {kcal_quemadas} kcal\n\n"
         f"⚖️ *Balance neto diario:* {balance_diario:+d} kcal\n"
-        f"📉 *Calorías restantes para tu objetivo:* {kcal_restantes} kcal",
+        f"📉 *Faltan para tu objetivo:* {kcal_restantes} kcal",
         parse_mode="Markdown"
     )
 
@@ -387,7 +496,7 @@ async def balance_general_command(update: Update, context: ContextTypes.DEFAULT_
     
     await update.message.reply_text(
         f"📈 *Balance General (Acumulado Mensual)*\n\n"
-        f"• *Objetivo Diario:* {kcal_objetivo} kcal\n"
+        f"• *Objetivo Diario Base:* {kcal_objetivo} kcal\n"
         f"• *Total Ingerido:* {total_ing} kcal\n"
         f"• *Total Quemado:* {total_quem} kcal\n"
         f"⚖️ *Balance Neto Total:* {balance_neto:+d} kcal",
@@ -417,7 +526,9 @@ async def reporte_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         writer.writerow([fecha, ing, cardio, fuerza, total_quemadas, balance])
     
     csv_bytes = io.BytesIO(output.getvalue().encode('utf-8'))
-    csv_bytes.name = f"reporte_metabolico_{datetime.now().strftime('%Y%m%d')}.csv"
+    # Nombre de archivo dinámico con hora Argentina
+    fecha_archivo = (datetime.utcnow() - timedelta(hours=3)).strftime('%Y%m%d')
+    csv_bytes.name = f"reporte_metabolico_{fecha_archivo}.csv"
     
     await update.effective_message.reply_document(
         document=csv_bytes, 
@@ -446,8 +557,12 @@ def build_application():
     )
     
     application.add_handler(conv_handler)
-    application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("help", guia_command))
+    application.add_handler(CommandHandler("guia", guia_command))
     application.add_handler(CommandHandler("setobjetivo", set_objetivo_command))
+    application.add_handler(CommandHandler("peso", peso_command))
+    application.add_handler(CommandHandler("partidomanana", partidomanana_command))
+    application.add_handler(CommandHandler("quecomo", quecomo_command))
     application.add_handler(CommandHandler("eliminarultimo", eliminar_ultimo_command))
     application.add_handler(CommandHandler("balance", balance_command))
     application.add_handler(CommandHandler("balancegeneral", balance_general_command))
