@@ -119,7 +119,6 @@ async def ask_objetivo(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def ask_deporte(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data['objetivo'] = update.message.text
-    # Lista de deportes actualizada con Cinta y Running
     reply_keyboard = [
         ['Squash', 'Tenis', 'Pádel'], 
         ['Running', 'Cinta Correr', 'Cinta Inclinada'],
@@ -144,7 +143,6 @@ async def finish_onboarding(update: Update, context: ContextTypes.DEFAULT_TYPE):
     actividad = context.user_data.get('actividad', 'Moderado')
     objetivo = context.user_data.get('objetivo', 'Mantenimiento')
     
-    # --- CÁLCULO DE MIFFLIN-ST JEOR ---
     tmb = (10 * peso) + (6.25 * altura) - (5 * edad)
     tmb += 5 if sexo == 'Hombre' else -161
     
@@ -154,7 +152,6 @@ async def finish_onboarding(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ajustes = {'Déficit Calorico': -500, 'Mantenimiento': 0, 'Volumen': 500}
     kcal_objetivo = int(gasto_diario + ajustes.get(objetivo, 0))
 
-    # Guardar en base de datos
     user_id = str(update.effective_user.id)
     profiles = get_db(PROFILES_FILE)
     profiles[user_id] = {
@@ -187,12 +184,12 @@ async def guia_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "🗣 *¿Cómo registrar?*\n"
         "Mandame un texto, foto o nota de voz diciendo qué comiste o cuánto entrenaste. Yo me encargo del resto.\n\n"
         "⚡ *Comandos Estrella:*\n"
-        "• /quecomo - Te calculo cuántas calorías te faltan y te doy 2 opciones de comida para cerrar el día.\n"
+        "• /quecomo - Analiza las kcal que te faltan y te arma el plan fraccionado (Merienda + Cena si es mucho volumen).\n"
         "• /partidomanana - Sube tu objetivo de hoy (+350 kcal) para llenar los depósitos de glucógeno.\n"
         "• /peso <kg> - Si bajaste o subiste (ej: /peso 74.5), recalculo todo tu metabolismo automáticamente.\n\n"
         "📊 *Balance y Edición:*\n"
         "• /balance - Muestra el balance diario.\n"
-        "• /balancegeneral - Acumulados mensuales y exporta Excel.\n"
+        "• /balancegeneral - Promedios diarios por objetivo y exporta Excel.\n"
         "• /eliminarultimo - Deshace el último guardado de hoy.\n"
         "• /setobjetivo <kcal> - Cambia tu meta manualmente."
     )
@@ -211,7 +208,6 @@ async def peso_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         p = profiles[user_id]
         p['peso'] = nuevo_peso
         
-        # Recalcular TMB
         tmb = (10 * nuevo_peso) + (6.25 * p['altura']) - (5 * p['edad'])
         tmb += 5 if p['sexo'] == 'Hombre' else -161
         multiplicadores = {'Sedentario': 1.2, 'Leve': 1.375, 'Moderado': 1.55, 'Intenso': 1.725}
@@ -242,7 +238,6 @@ async def partidomanana_command(update: Update, context: ContextTypes.DEFAULT_TY
     if user_id not in logs: logs[user_id] = {}
     if today not in logs[user_id]: logs[user_id][today] = {}
     
-    # Guardamos este objetivo especial solo para el día de hoy
     logs[user_id][today]["objetivo_temporal"] = objetivo_partido
     save_db(LOGS_FILE, logs)
     
@@ -275,28 +270,28 @@ async def quecomo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("¡Ya alcanzaste tu objetivo de hoy! Preparate un buen mate y a descansar el cuerpo. 🧉")
         return
         
-    await update.message.reply_text(f"🔍 Buscando opciones exactas para tus {kcal_restantes} kcal restantes...", parse_mode="Markdown")
+    await update.message.reply_text(f"🔍 Analizando cómo distribuir tus {kcal_restantes} kcal restantes...", parse_mode="Markdown")
     
     service: GeminiNutritionService = context.application.bot_data["nutrition_service"]
     
-    prompt_bot = (
-        f"Al usuario le faltan exactamente {kcal_restantes} kcal para cumplir su objetivo diario. "
-        "Brindale 2 opciones claras, deliciosas y nutritivas de comida real que sumen aproximadamente "
-        "esa cantidad de calorías. No uses etiquetas del sistema ocultas. Háblale directo como colega médico, "
-        "y detallale las 2 opciones con cantidades aproximadas y sus macros por encima."
-    )
+    # Lógica inteligente fraccionada si es mucho volumen
+    if kcal_restantes > 1000:
+        instruccion = f"Al usuario le faltan {kcal_restantes} kcal. Como es un volumen alto, dividilo obligatoriamente en 2 tiempos de comida: una Merienda (aprox 400-500 kcal) y una Cena Completa (el resto). Detallá ambas opciones con cantidades y macros."
+    else:
+        instruccion = f"Al usuario le faltan {kcal_restantes} kcal. Sugerí una opción clara y rápida para cubrir este remanente con sus calorías y macros."
+
+    prompt_bot = f"{instruccion} No uses etiquetas ocultas. Háblale directo como colega médico, sé breve y bien estructurado."
     
     req = GeminiInput(text=prompt_bot, media_bytes=None, mime_type=None, media_label=None)
     
     try:
         ai_response = await service.analyze(req)
-        # Limpieza por si Gemini intenta poner las etiquetas base
         clean_response = re.sub(r'\[TIPO:.*?\]', '', ai_response)
         clean_response = re.sub(r'\[TIP_MEDICO:.*?\]', '', clean_response).strip()
-        await update.message.reply_text(f"🍽️ *Opciones para cerrar tu día:*\n\n{clean_response}", parse_mode="Markdown")
+        await update.message.reply_text(f"🍽️ *Estrategia sugerida para cerrar el día:*\n\n{clean_response}", parse_mode="Markdown")
     except Exception as e:
         logger.error(f"Error Gemini quecomo: {e}")
-        await update.message.reply_text("Hubo un error al buscar las recetas, pero te sugiero apuntar a proteínas magras para esa cantidad.")
+        await update.message.reply_text("Me costó procesar el cálculo. Te sugiero dividirlo en una porción de proteína magra con vegetales y una fuente de hidratos complejos.")
 
 async def set_objetivo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
@@ -346,20 +341,16 @@ async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     message = update.message
     text_input = message.text or message.caption or ""
     
-    # Filtro anti-basura
     if len(text_input.strip()) < 3 and not message.photo and not message.voice and not message.audio:
         await message.reply_text("👍") 
         return
 
-    # Control de estado "Editando"
     if context.user_data.get("esperando_edicion"):
         context.user_data["esperando_edicion"] = False
         text_input = f"Corrección sobre el registro anterior: {text_input}"
 
     service: GeminiNutritionService = context.application.bot_data["nutrition_service"]
-    file_bytes = None
-    mime_type = None
-    media_label = None
+    file_bytes, mime_type, media_label = None, None, None
 
     if message.photo:
         await message.reply_text("👀 Analizando la imagen... Un momento.")
@@ -382,7 +373,6 @@ async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         ai_response = await service.analyze(req)
         
-        # --- EXTRACCIÓN DE ETIQUETAS DEL PROMPT ---
         tipo_registro = "ingesta" 
         if "[TIPO: GASTO_CARDIO]" in ai_response: tipo_registro = "gasto_cardio"
         elif "[TIPO: GASTO_FUERZA]" in ai_response: tipo_registro = "gasto_fuerza"
@@ -427,7 +417,6 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if today not in logs[user_id]: 
             logs[user_id][today] = {"kcal_ing": 0, "kcal_quemadas": 0, "kcal_quemadas_cardio": 0, "kcal_quemadas_fuerza": 0}
         
-        # Clasificación guiada por la etiqueta de Gemini
         if tipo == "gasto_cardio":
             logs[user_id][today]["kcal_quemadas_cardio"] = logs[user_id][today].get("kcal_quemadas_cardio", 0) + kcal_detectadas
             logs[user_id][today]["kcal_quemadas"] = logs[user_id][today].get("kcal_quemadas", 0) + kcal_detectadas
@@ -466,7 +455,6 @@ async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_profile = profiles.get(user_id, {})
     user_log = logs.get(user_id, {}).get(today, {"kcal_ing": 0, "kcal_quemadas": 0})
     
-    # Toma el objetivo temporal del Match Day si existe, sino el de perfil
     kcal_objetivo = user_log.get("objetivo_temporal", user_profile.get("kcal_objetivo", 2200))
     kcal_ing = user_log.get("kcal_ing", 0)
     kcal_quemadas = user_log.get("kcal_quemadas", 0)
@@ -489,17 +477,33 @@ async def balance_general_command(update: Update, context: ContextTypes.DEFAULT_
     profiles = get_db(PROFILES_FILE)
     logs_user = get_db(LOGS_FILE).get(user_id, {})
     
-    kcal_objetivo = profiles.get(user_id, {}).get("kcal_objetivo", 2200)
-    total_ing = sum(d.get("kcal_ing", 0) for d in logs_user.values())
-    total_quem = sum(d.get("kcal_quemadas", 0) for d in logs_user.values())
-    balance_neto = total_ing - total_quem
+    if not logs_user:
+        await update.message.reply_text("Todavía no hay registros históricos cargados.")
+        return
+
+    kcal_objetivo_base = profiles.get(user_id, {}).get("kcal_objetivo", 2200)
     
+    total_dias = len(logs_user)
+    suma_ing = sum(d.get("kcal_ing", 0) for d in logs_user.values())
+    suma_quem = sum(d.get("kcal_quemadas", 0) for d in logs_user.values())
+    
+    promedio_ing = int(suma_ing / total_dias) if total_dias > 0 else 0
+    promedio_quem = int(suma_quem / total_dias) if total_dias > 0 else 0
+    promedio_neto = promedio_ing - promedio_quem
+    
+    evaluacion = "🟢 En rango óptimo respecto al objetivo"
+    if promedio_ing < kcal_objetivo_base - 200:
+        evaluacion = "📉 Por debajo de la meta (Déficit acentuado)"
+    elif promedio_ing > kcal_objetivo_base + 200:
+        evaluacion = "📈 Por encima de la meta (Superávit)"
+
     await update.message.reply_text(
-        f"📈 *Balance General (Acumulado Mensual)*\n\n"
-        f"• *Objetivo Diario Base:* {kcal_objetivo} kcal\n"
-        f"• *Total Ingerido:* {total_ing} kcal\n"
-        f"• *Total Quemado:* {total_quem} kcal\n"
-        f"⚖️ *Balance Neto Total:* {balance_neto:+d} kcal",
+        f"📈 *Balance General y Promedios ({total_dias} días registrados)*\n\n"
+        f"• *Promedio Ingerido:* {promedio_ing} kcal/día\n"
+        f"• *Objetivo Diario Base:* {kcal_objetivo_base} kcal/día\n"
+        f"• *Promedio Quemado:* {promedio_quem} kcal/día\n"
+        f"⚖️ *Balance Neto Promedio:* {promedio_neto:+d} kcal/día\n\n"
+        f"💡 *Evaluación:* {evaluacion}",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📄 Descargar Reporte en Excel", callback_data="download_report")]]),
         parse_mode="Markdown"
     )
@@ -514,7 +518,6 @@ async def reporte_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     output = io.StringIO()
     writer = csv.writer(output)
-    # Agregamos las columnas específicas de Cardio y Fuerza al Excel
     writer.writerow(["Fecha", "Kcal Ingeridas", "Quemadas (Cardio)", "Quemadas (Fuerza)", "Total Quemadas", "Balance Neto"])
     
     for fecha, datos in sorted(logs_user.items()):
@@ -526,14 +529,42 @@ async def reporte_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         writer.writerow([fecha, ing, cardio, fuerza, total_quemadas, balance])
     
     csv_bytes = io.BytesIO(output.getvalue().encode('utf-8'))
-    # Nombre de archivo dinámico con hora Argentina
     fecha_archivo = (datetime.utcnow() - timedelta(hours=3)).strftime('%Y%m%d')
     csv_bytes.name = f"reporte_metabolico_{fecha_archivo}.csv"
     
     await update.effective_message.reply_document(
         document=csv_bytes, 
-        caption="📊 Aquí tenés tu reporte. Abrilo con Excel para ver el balance entre Cardio y Fuerza."
+        caption="📊 Aquí tenés tu reporte con promedios y desglose de Cardio y Fuerza."
     )
+
+
+# --- NOTIFICACIONES AUTOMÁTICAS (JOB QUEUE) ---
+
+async def verificar_registros_14hs(context: ContextTypes.DEFAULT_TYPE):
+    today = get_fecha_argentina()
+    logs = get_db(LOGS_FILE)
+    for user_id, user_logs in logs.items():
+        if today not in user_logs or user_logs[today].get("kcal_ing", 0) == 0:
+            try:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text="⏱️ *Recordatorio de las 14:00 hs*\n\nColega, todavía no registraste tu almuerzo ni actividad de hoy. Mandame el reporte cuando puedas para mantener la precisión metabólica. 🥑"
+                )
+            except Exception as e:
+                logger.error(f"No se pudo enviar recordatorio de 14hs a {user_id}: {e}")
+
+async def verificar_registros_23hs(context: ContextTypes.DEFAULT_TYPE):
+    today = get_fecha_argentina()
+    logs = get_db(LOGS_FILE)
+    for user_id, user_logs in logs.items():
+        if today not in user_logs or user_logs[today].get("kcal_ing", 0) == 0:
+            try:
+                await context.bot.send_message(
+                    chat_id=user_id,
+                    text="🌙 *Cierre de jornada (23:00 hs)*\n\nNoté que hoy no registraste ingesta en el sistema. ¿Fue día de ayuno, descanso o se pasó por alto? Usá /balance para revisar cómo cerró el día."
+                )
+            except Exception as e:
+                logger.error(f"No se pudo enviar recordatorio nocturno a {user_id}: {e}")
 
 
 def build_application():
@@ -541,7 +572,11 @@ def build_application():
     application = Application.builder().token(settings.telegram_bot_token).build()
     application.bot_data["nutrition_service"] = GeminiNutritionService(settings)
     
-    # Manejador de la conversación de Onboarding (/start)
+    # Configuración de notificaciones automáticas (JobQueue) adaptadas a Hora Argentina (UTC-3 -> 17:00 UTC y 02:00 UTC)
+    job_queue = application.job_queue
+    job_queue.run_daily(verificar_registros_14hs, time=datetime.strptime("17:00:00", "%H:%M:%S").time())
+    job_queue.run_daily(verificar_registros_23hs, time=datetime.strptime("02:00:00", "%H:%M:%S").time())
+    
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start_command)],
         states={
@@ -567,7 +602,6 @@ def build_application():
     application.add_handler(CommandHandler("balance", balance_command))
     application.add_handler(CommandHandler("balancegeneral", balance_general_command))
     
-    # Manejador general para procesar audios, fotos y textos
     application.add_handler(MessageHandler((filters.TEXT | filters.PHOTO | filters.VOICE | filters.AUDIO) & ~filters.COMMAND, handle_input))
     application.add_handler(CallbackQueryHandler(button_callback))
     
