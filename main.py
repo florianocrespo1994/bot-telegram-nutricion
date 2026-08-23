@@ -274,7 +274,6 @@ async def quecomo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     service: GeminiNutritionService = context.application.bot_data["nutrition_service"]
     
-    # Lógica inteligente fraccionada si es mucho volumen
     if kcal_restantes > 1000:
         instruccion = f"Al usuario le faltan {kcal_restantes} kcal. Como es un volumen alto, dividilo obligatoriamente en 2 tiempos de comida: una Merienda (aprox 400-500 kcal) y una Cena Completa (el resto). Detallá ambas opciones con cantidades y macros."
     else:
@@ -572,7 +571,6 @@ def build_application():
     application = Application.builder().token(settings.telegram_bot_token).build()
     application.bot_data["nutrition_service"] = GeminiNutritionService(settings)
     
-    # Configuración de notificaciones automáticas (JobQueue) adaptadas a Hora Argentina (UTC-3 -> 17:00 UTC y 02:00 UTC)
     job_queue = application.job_queue
     job_queue.run_daily(verificar_registros_14hs, time=datetime.strptime("17:00:00", "%H:%M:%S").time())
     job_queue.run_daily(verificar_registros_23hs, time=datetime.strptime("02:00:00", "%H:%M:%S").time())
