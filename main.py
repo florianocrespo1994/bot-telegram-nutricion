@@ -4,7 +4,7 @@ import logging
 import re
 import csv
 import io
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 from flask import Flask
 from threading import Thread
 
@@ -161,6 +161,13 @@ async def finish_onboarding(update: Update, context: ContextTypes.DEFAULT_TYPE):
     }
     save_db(PROFILES_FILE, profiles)
 
+    # LIMPIEZA DE OBJETIVO TEMPORAL (Destrabe del balance)
+    today = get_fecha_argentina()
+    logs = get_db(LOGS_FILE)
+    if user_id in logs and today in logs[user_id]:
+        logs[user_id][today].pop("objetivo_temporal", None)
+        save_db(LOGS_FILE, logs)
+
     resumen = (
         f"✅ *¡Perfil Clínico Configurado!*\n\n"
         f"• *Tasa Metabólica Basal:* ~{int(tmb)} kcal\n"
@@ -191,7 +198,8 @@ async def guia_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /balance - Muestra el balance diario.\n"
         "• /balancegeneral - Promedios diarios por objetivo y exporta Excel.\n"
         "• /eliminarultimo - Deshace el último guardado de hoy.\n"
-        "• /setobjetivo <kcal> - Cambia tu meta manualmente."
+        "• /setobjetivo <kcal> - Cambia tu meta manualmente.\n"
+        "• /reporte - Descarga directamente tu archivo Excel."
     )
     await update.message.reply_text(guia_text, parse_mode="Markdown")
 
@@ -217,6 +225,13 @@ async def peso_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         p['kcal_objetivo'] = nuevo_objetivo
         save_db(PROFILES_FILE, profiles)
+
+        # LIMPIEZA DE OBJETIVO TEMPORAL (Destrabe del balance)
+        today = get_fecha_argentina()
+        logs = get_db(LOGS_FILE)
+        if user_id in logs and today in logs[user_id]:
+            logs[user_id][today].pop("objetivo_temporal", None)
+            save_db(LOGS_FILE, logs)
         
         await update.message.reply_text(f"⚖️ Peso actualizado a {nuevo_peso} kg.\n🎯 Tu nuevo objetivo diario se ajustó automáticamente a: *{nuevo_objetivo} kcal*.", parse_mode="Markdown")
     except (IndexError, ValueError):
@@ -300,6 +315,14 @@ async def set_objetivo_command(update: Update, context: ContextTypes.DEFAULT_TYP
         if user_id not in profiles: profiles[user_id] = {}
         profiles[user_id]["kcal_objetivo"] = nuevo_obj
         save_db(PROFILES_FILE, profiles)
+        
+        # LIMPIEZA DE OBJETIVO TEMPORAL (Destrabe del balance)
+        today = get_fecha_argentina()
+        logs = get_db(LOGS_FILE)
+        if user_id in logs and today in logs[user_id]:
+            logs[user_id][today].pop("objetivo_temporal", None)
+            save_db(LOGS_FILE, logs)
+            
         await update.message.reply_text(f"🎯 Objetivo actualizado a *{nuevo_obj} kcal* diarias.", parse_mode="Markdown")
     except (IndexError, ValueError):
         await update.message.reply_text("⚠️ Uso correcto: /setobjetivo 2500")
@@ -440,6 +463,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif query.data == "med_tip":
         tip_text = context.user_data.get("pending_tip", "Consulta siempre a tu profesional de cabecera.")
         await query.message.reply_text(f"👨‍⚕️ *Perspectiva Médica y Metabólica:*\n\n{tip_text}", parse_mode="Markdown")
+        
+    elif query.data == "download_report":
+        # Conexión del botón de Excel
+        await reporte_command(update, context)
 
 
 # --- REPORTES Y BALANCE ---
@@ -511,8 +538,11 @@ async def reporte_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     logs_user = get_db(LOGS_FILE).get(user_id, {})
     
+    # Manejamos si viene de un query callback o de un comando directo
+    message = update.effective_message
+    
     if not logs_user:
-        await update.effective_message.reply_text("Todavía no hay registros para exportar.")
+        await message.reply_text("Todavía no hay registros para exportar.")
         return
 
     output = io.StringIO()
@@ -531,7 +561,7 @@ async def reporte_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     fecha_archivo = (datetime.utcnow() - timedelta(hours=3)).strftime('%Y%m%d')
     csv_bytes.name = f"reporte_metabolico_{fecha_archivo}.csv"
     
-    await update.effective_message.reply_document(
+    await message.reply_document(
         document=csv_bytes, 
         caption="📊 Aquí tenés tu reporte con promedios y desglose de Cardio y Fuerza."
     )
@@ -547,7 +577,8 @@ async def verificar_registros_14hs(context: ContextTypes.DEFAULT_TYPE):
             try:
                 await context.bot.send_message(
                     chat_id=user_id,
-                    text="⏱️ *Recordatorio de las 14:00 hs*\n\nColega, todavía no registraste tu almuerzo ni actividad de hoy. Mandame el reporte cuando puedas para mantener la precisión metabólica. 🥑"
+                    text="⏱️ *Recordatorio de Media Jornada*\n\n¡Hola! Aún no has registrado actividad y/o alimento el día de hoy. No olvides hacerlo para tener un correcto análisis mensual. 🥑",
+                    parse_mode="Markdown"
                 )
             except Exception as e:
                 logger.error(f"No se pudo enviar recordatorio de 14hs a {user_id}: {e}")
@@ -560,7 +591,8 @@ async def verificar_registros_23hs(context: ContextTypes.DEFAULT_TYPE):
             try:
                 await context.bot.send_message(
                     chat_id=user_id,
-                    text="🌙 *Cierre de jornada (23:00 hs)*\n\nNoté que hoy no registraste ingesta en el sistema. ¿Fue día de ayuno, descanso o se pasó por alto? Usá /balance para revisar cómo cerró el día."
+                    text="🌙 *Cierre de Jornada*\n\nColega, aún no has registrado actividad y/o alimento el día de hoy. No olvides hacerlo para tener un correcto análisis mensual. ¡A descansar!",
+                    parse_mode="Markdown"
                 )
             except Exception as e:
                 logger.error(f"No se pudo enviar recordatorio nocturno a {user_id}: {e}")
@@ -572,8 +604,10 @@ def build_application():
     application.bot_data["nutrition_service"] = GeminiNutritionService(settings)
     
     job_queue = application.job_queue
-    job_queue.run_daily(verificar_registros_14hs, time=datetime.strptime("17:00:00", "%H:%M:%S").time())
-    job_queue.run_daily(verificar_registros_23hs, time=datetime.strptime("02:00:00", "%H:%M:%S").time())
+    # 17:00 UTC = 14:00 hora de Argentina
+    job_queue.run_daily(verificar_registros_14hs, time=time(hour=17, minute=0))
+    # 02:00 UTC = 23:00 hora de Argentina
+    job_queue.run_daily(verificar_registros_23hs, time=time(hour=2, minute=0))
     
     conv_handler = ConversationHandler(
         entry_points=[CommandHandler('start', start_command)],
@@ -599,6 +633,8 @@ def build_application():
     application.add_handler(CommandHandler("eliminarultimo", eliminar_ultimo_command))
     application.add_handler(CommandHandler("balance", balance_command))
     application.add_handler(CommandHandler("balancegeneral", balance_general_command))
+    # Comando reporte activado de forma independiente:
+    application.add_handler(CommandHandler("reporte", reporte_command)) 
     
     application.add_handler(MessageHandler((filters.TEXT | filters.PHOTO | filters.VOICE | filters.AUDIO) & ~filters.COMMAND, handle_input))
     application.add_handler(CallbackQueryHandler(button_callback))
