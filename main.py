@@ -41,19 +41,12 @@ RANGO_EDAD = (10, 100)
 RANGO_PESO = (30.0, 300.0)
 RANGO_ALTURA = (120.0, 230.0)
 
-# [NUEVO] Piso de seguridad calórico: un déficit fijo de -500 no debería poder
-# llevar a nadie por debajo de un mínimo clínicamente razonable.
 PISO_KCAL = {"Hombre": 1500, "Mujer": 1200}
-
-# [NUEVO] Gramos de proteína por kg de peso, según objetivo (rango conservador
-# dentro de la literatura deportiva: más alto en déficit para preservar masa magra).
 FACTOR_PROTEINA = {"Déficit Calorico": 2.0, "Mantenimiento": 1.6, "Volumen": 1.8}
 
 MULTIPLICADORES = {'Sedentario': 1.2, 'Leve': 1.375, 'Moderado': 1.55, 'Intenso': 1.725}
 AJUSTES = {'Déficit Calorico': -500, 'Mantenimiento': 0, 'Volumen': 500}
 
-# [NUEVO] METs aproximados para estimar minutos de ejercicio equivalentes a un
-# superávit calórico. Valores estándar de tablas de compendio de actividad física.
 MET_TABLE = {
     'Squash': 7.3, 'Tenis': 7.3, 'Pádel': 6.0, 'Running': 9.8,
     'Cinta Correr': 8.3, 'Cinta Inclinada': 9.0, 'Fútbol 11': 7.0, 'Fútbol 5': 7.0,
@@ -61,7 +54,7 @@ MET_TABLE = {
     'Crossfit': 8.0, 'Kick boxing': 8.3, 'Judo': 10.3, 'Handball': 8.0,
     'Tenis de mesa': 4.0, 'Ajedrez': 1.5,
 }
-MET_CAMINATA = 4.3  # opción universal, siempre disponible como segunda alternativa
+MET_CAMINATA = 4.3
 
 COMODINES_POR_SEMANA = 2
 
@@ -79,8 +72,6 @@ def get_db(file):
 
 
 def save_db(file, data):
-    # Escritura atómica: si el proceso se cae a mitad de escritura, el archivo
-    # original queda intacto (no se corrompe para todos los usuarios).
     tmp_file = f"{file}.tmp"
     with open(tmp_file, "w", encoding="utf-8") as f:
         json.dump(data, f, ensure_ascii=False, indent=4)
@@ -92,9 +83,30 @@ def extraer_calorias(texto):
     return int(match.group(1)) if match else 0
 
 
+def estimar_calorias_entrenamiento(texto, peso_kg, deporte_preferido):
+    match_hs = re.search(r'(\d+(?:[.,]\d+)?)\s*(?:hs|hora|horas)', texto, re.IGNORECASE)
+    match_min = re.search(r'(\d+)\s*(?:min|minutos)', texto, re.IGNORECASE)
+    
+    minutos = 0
+    if match_hs:
+        minutos += float(match_hs.group(1).replace(',', '.')) * 60
+    if match_min:
+        minutos += int(match_min.group(1))
+    
+    if minutos == 0:
+        minutos = 60
+
+    met = MET_TABLE.get(deporte_preferido, 7.0)
+    for dep, m in MET_TABLE.items():
+        if dep.lower() in texto.lower():
+            met = m
+            break
+
+    kcal_estimadas = int(met * 3.5 * peso_kg / 200 * minutos)
+    return max(50, kcal_estimadas)
+
+
 def extraer_macros(texto):
-    """Fallback legado: extrae macros del formato 'Xg P, Xg C, Xg G' por si el
-    modelo no devuelve el bloque JSON estructurado."""
     patron = r'(\d+(?:[.,]\d+)?)\s*g\s*P.*?(\d+(?:[.,]\d+)?)\s*g\s*C.*?(\d+(?:[.,]\d+)?)\s*g\s*G'
     match = re.search(patron, texto, re.IGNORECASE | re.DOTALL)
     if match:
@@ -116,35 +128,44 @@ def _normalizar_tipo(valor):
     return "ingesta"
 
 
-def extraer_datos_estructurados(texto):
-    """[NUEVO] Parsea el bloque ###DATOS_JSON### que ahora pide prompts.py.
-    Es mucho más confiable que adivinar números sueltos en texto libre.
-    Si el modelo no devuelve el bloque bien formado, cae al parseo legado
-    (regex sobre texto libre) para no romper el flujo."""
+def extraer_datos_estructurados(texto, peso_usuario=75.0, deporte_preferido="Squash"):
     match = JSON_BLOCK_PATTERN.search(texto)
+    tipo = "ingesta"
+    kcal = 0
+    proteinas, carbohidratos, grasas = 0.0, 0.0, 0.0
+    tip_medico = "Sigue prestando atención a tus porciones y actividad."
+
     if match:
         try:
             data = json.loads(match.group(1))
-            return {
-                "tipo": _normalizar_tipo(data.get("tipo", "INGESTA")),
-                "kcal": int(data.get("kcal", 0) or 0),
-                "proteinas": float(data.get("proteinas_g", 0) or 0),
-                "carbohidratos": float(data.get("carbohidratos_g", 0) or 0),
-                "grasas": float(data.get("grasas_g", 0) or 0),
-                "tip_medico": str(data.get("tip_medico") or "Sigue prestando atención a tus porciones y actividad."),
-            }
+            tipo = _normalizar_tipo(data.get("tipo", "INGESTA"))
+            kcal = int(data.get("kcal", 0) or 0)
+            proteinas = float(data.get("proteinas_g", 0) or 0)
+            carbohidratos = float(data.get("carbohidratos_g", 0) or 0)
+            grasas = float(data.get("grasas_g", 0) or 0)
+            tip_medico = str(data.get("tip_medico") or tip_medico)
         except (json.JSONDecodeError, TypeError, ValueError) as e:
-            logger.warning(f"No se pudo parsear el bloque JSON de Gemini, uso fallback por regex: {e}")
+            logger.warning(f"No se pudo parsear el bloque JSON, uso fallback: {e}")
 
-    tipo = "ingesta"
-    if "[TIPO: GASTO_CARDIO]" in texto: tipo = "gasto_cardio"
-    elif "[TIPO: GASTO_FUERZA]" in texto: tipo = "gasto_fuerza"
-    tip_match = re.search(r'\[TIP_MEDICO:\s*(.*?)\]', texto, re.DOTALL)
-    tip_medico = tip_match.group(1).strip() if tip_match else "Sigue prestando atención a tus porciones y actividad."
+    if not match:
+        if "[TIPO: GASTO_CARDIO]" in texto: tipo = "gasto_cardio"
+        elif "[TIPO: GASTO_FUERZA]" in texto: tipo = "gasto_fuerza"
+        elif any(w in texto.lower() for w in ["hs", "min", "entren", "jug", "correr", "cinta", "squash", "futbol", "padel"]):
+            if tipo == "ingesta":
+                tipo = "gasto_cardio"
+
+        kcal = extraer_calorias(texto)
+        macros = extraer_macros(texto)
+        proteinas, carbohidratos, grasas = macros["proteinas"], macros["carbohidratos"], macros["grasas"]
+        tip_match = re.search(r'\[TIP_MEDICO:\s*(.*?)\]', texto, re.DOTALL)
+        if tip_match: tip_medico = tip_match.group(1).strip()
+
+    if tipo in ("gasto_cardio", "gasto_fuerza") and kcal == 0:
+        kcal = estimar_calorias_entrenamiento(texto, peso_usuario, deporte_preferido)
+
     return {
-        "tipo": tipo,
-        "kcal": extraer_calorias(texto),
-        **extraer_macros(texto),
+        "tipo": tipo, "kcal": kcal,
+        "proteinas": proteinas, "carbohidratos": carbohidratos, "grasas": grasas,
         "tip_medico": tip_medico,
     }
 
@@ -172,8 +193,6 @@ def _dia_vacio():
 
 
 def calcular_perfil_calorico(sexo, edad, peso, altura, actividad, objetivo):
-    """Helper único para el cálculo de TMB/objetivo, usado tanto en el onboarding
-    como en /peso. Aplica el piso de seguridad y calcula el objetivo de proteína."""
     tmb = (10 * peso) + (6.25 * altura) - (5 * edad)
     tmb += 5 if sexo == 'Hombre' else -161
     gasto_diario = tmb * MULTIPLICADORES.get(actividad, 1.2)
@@ -193,7 +212,6 @@ def calcular_perfil_calorico(sexo, edad, peso, altura, actividad, objetivo):
 
 
 def actualizar_historial_peso(perfil, fecha, peso):
-    """[NUEVO] Guarda el historial de pesadas para poder promediar 7 días."""
     historial = perfil.setdefault("historial_peso", [])
     historial = [h for h in historial if h["fecha"] != fecha]
     historial.append({"fecha": fecha, "peso": peso})
@@ -203,8 +221,6 @@ def actualizar_historial_peso(perfil, fecha, peso):
 
 
 def promedio_peso_7d(historial, fecha_actual_str):
-    """[NUEVO] Promedio móvil de 7 días: evita que el objetivo calórico
-    "salte" por una sola fluctuación de agua/glucógeno."""
     fecha_actual = datetime.strptime(fecha_actual_str, "%Y-%m-%d").date()
     recientes = [
         h["peso"] for h in historial
@@ -214,11 +230,9 @@ def promedio_peso_7d(historial, fecha_actual_str):
 
 
 def calcular_opciones_ejercicio(kcal_exceso, peso_kg, deporte_preferido):
-    """[NUEVO] Minutos aproximados para "cerrar" un superávit calórico,
-    usando el deporte preferido del usuario + una opción universal (caminata)."""
     opciones = []
     met_pref = MET_TABLE.get(deporte_preferido)
-    if met_pref and met_pref >= 3:  # filtra actividades no aeróbicas reales (ej: ajedrez)
+    if met_pref and met_pref >= 3:
         kcal_min_pref = met_pref * 3.5 * peso_kg / 200
         opciones.append((deporte_preferido, max(1, round(kcal_exceso / kcal_min_pref))))
     kcal_min_caminata = MET_CAMINATA * 3.5 * peso_kg / 200
@@ -232,7 +246,6 @@ def _lunes_de_semana(fecha_str):
 
 
 def actualizar_comidas_frecuentes(perfil, texto_resumen, kcal, macros):
-    """[NUEVO] Guarda hasta 5 comidas recientes distintas para el registro rápido (/rapido)."""
     lista = perfil.setdefault("comidas_frecuentes", [])
     clave = texto_resumen.strip().lower()[:60]
     lista = [c for c in lista if c.get("clave") != clave]
@@ -241,8 +254,6 @@ def actualizar_comidas_frecuentes(perfil, texto_resumen, kcal, macros):
 
 
 def verificar_y_generar_refuerzo_superavit(perfil, dia):
-    """[NUEVO] Refuerzo positivo (no punitivo) cuando el balance del día está
-    por encima del objetivo: informa, no obliga. Se manda una sola vez por día."""
     if dia.get("aviso_superavit_enviado"):
         return None
     kcal_objetivo = dia.get("objetivo_temporal", perfil.get("kcal_objetivo", 2200))
@@ -462,7 +473,7 @@ async def peso_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         peso_prom = promedio_peso_7d(historial, today) or nuevo_peso
 
         resultado = calcular_perfil_calorico(p['sexo'], p['edad'], peso_prom, p['altura'], p['actividad'], p['objetivo'])
-        p['peso'] = nuevo_peso  # el valor mostrado es el real, el cálculo usa el promedio
+        p['peso'] = nuevo_peso
         p['kcal_objetivo'] = resultado['kcal_objetivo']
         p['objetivo_proteina_g'] = resultado['objetivo_proteina_g']
         save_db(PROFILES_FILE, profiles)
@@ -535,6 +546,7 @@ async def quecomo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kcal_ing = user_log.get("kcal_ing", 0)
     kcal_quemadas = user_log.get("kcal_quemadas", 0)
 
+    # Cálculo clínico depurado: cuánto falta para la meta de ingesta considerando el balance neto
     balance_diario = kcal_ing - kcal_quemadas
     kcal_restantes = kcal_objetivo - balance_diario
 
@@ -613,7 +625,7 @@ async def eliminar_ultimo_command(update: Update, context: ContextTypes.DEFAULT_
         dia["kcal_quemadas"] = max(0, dia.get("kcal_quemadas", 0) - kcal)
 
     dia.pop("last_action", None)
-    dia["aviso_superavit_enviado"] = False  # si deshace, puede volver a estar en superávit válido
+    dia["aviso_superavit_enviado"] = False
     save_db(LOGS_FILE, logs)
     await update.message.reply_text(f"🗑️ Listo. Se revirtió el último registro de {kcal} kcal.")
 
@@ -660,16 +672,16 @@ async def _chequeo_individual(context: ContextTypes.DEFAULT_TYPE, es_mediodia: b
     if es_mediodia:
         dia["checkpoint_14hs"] = {"kcal_ing": kcal_ing, "kcal_quemadas": kcal_quemadas}
         disparar = kcal_ing == 0 and kcal_quemadas == 0
-        texto = ("⏱️ *Recordatorio*\n\nChe, noté que todavía no registraste alimento ni entrenamiento hoy. "
-                 "¿Te salteaste alguno o directamente todavía no cargaste nada? 🥑")
+        texto = ("⏱️ *Recordatorio de Media Jornada*\n\n¡Hola! Aún no has registrado actividad y/o alimento el día de hoy. "
+                 "No olvides hacerlo para tener un correcto análisis mensual. 🥑")
     else:
         checkpoint = dia.get("checkpoint_14hs")
         if checkpoint is not None:
             disparar = (kcal_ing == checkpoint.get("kcal_ing", 0) and kcal_quemadas == checkpoint.get("kcal_quemadas", 0))
         else:
             disparar = (kcal_ing == 0 and kcal_quemadas == 0)
-        texto = ("🌙 *Cierre de Jornada*\n\nNoté que no sumaste ningún registro más desde tu recordatorio del mediodía. "
-                 "¿Se te pasó anotar algo? Recordá que también podés usar /ayer más tarde. ¡A descansar! 💪")
+        texto = ("🌙 *Cierre de Jornada*\n\nColega, aún no has registrado actividad y/o alimento el día de hoy. "
+                 "No olvides hacerlo para tener un correcto análisis mensual. ¡A descansar!")
 
     save_db(LOGS_FILE, logs)
     if disparar:
@@ -691,7 +703,6 @@ def _programar_jobs_horario(job_queue, chat_id, hora1_str, hora2_str):
             job.schedule_removal()
     hora1 = datetime.strptime(hora1_str, "%H:%M").time()
     hora2 = datetime.strptime(hora2_str, "%H:%M").time()
-    # Conversión simple Argentina (UTC-3) -> UTC para el scheduler.
     hora1_utc = (datetime.combine(datetime.today(), hora1) + timedelta(hours=3)).time()
     hora2_utc = (datetime.combine(datetime.today(), hora2) + timedelta(hours=3)).time()
     job_queue.run_daily(chequeo_registro_individual_mediodia, time=hora1_utc, chat_id=chat_id, name=f"mediodia:{chat_id}")
@@ -730,12 +741,18 @@ async def _procesar_y_pedir_confirmacion(update: Update, context: ContextTypes.D
                                           text_input: str, file_bytes, mime_type, media_label,
                                           target_date: str):
     message = update.message
+    user_id = str(update.effective_user.id)
+    profiles = get_db(PROFILES_FILE)
+    perfil = profiles.get(user_id, {})
+    peso_usuario = perfil.get("peso", 75.0)
+    deporte_preferido = perfil.get("deporte", "Squash")
+
     service: GeminiNutritionService = context.application.bot_data["nutrition_service"]
     req = GeminiInput(text=text_input, media_bytes=file_bytes, mime_type=mime_type, media_label=media_label)
 
     try:
         ai_response = await service.analyze(req)
-        datos = extraer_datos_estructurados(ai_response)
+        datos = extraer_datos_estructurados(ai_response, peso_usuario=peso_usuario, deporte_preferido=deporte_preferido)
         clean_response = limpiar_respuesta(ai_response)
 
         context.user_data["pending_analysis"] = clean_response
@@ -944,9 +961,9 @@ async def balance_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"📊 *Balance Diario ({today})*\n\n"
         f"• *Objetivo de hoy:* {kcal_objetivo} kcal\n"
         f"• *Ingeridas:* {kcal_ing} kcal\n"
-        f"• *Quemadas:* {kcal_quemadas} kcal\n"
+        f"• *Quemadas por ejercicio:* {kcal_quemadas} kcal\n"
         f"• *Macros:* {proteinas:.0f}g P{linea_proteina_obj}, {carbohidratos:.0f}g C, {grasas:.0f}g G\n\n"
-        f"⚖️ *Balance neto diario:* {balance_diario:+d} kcal\n"
+        f"⚖️ *Balance neto (Ingeridas - Quemadas):* {balance_diario:+d} kcal\n"
         f"📉 *Faltan para tu objetivo:* {kcal_restantes} kcal",
         parse_mode="Markdown"
     )
@@ -1031,7 +1048,7 @@ async def verificar_registros_14hs(context: ContextTypes.DEFAULT_TYPE):
     profiles = get_db(PROFILES_FILE)
     for user_id, user_logs in logs.items():
         if profiles.get(user_id, {}).get("horario_personalizado"):
-            continue  # este usuario ya tiene su propio job individual
+            continue
         dia = user_logs.setdefault(today, _dia_vacio())
         kcal_ing = dia.get("kcal_ing", 0)
         kcal_quemadas = dia.get("kcal_quemadas", 0)
@@ -1040,8 +1057,8 @@ async def verificar_registros_14hs(context: ContextTypes.DEFAULT_TYPE):
             try:
                 await context.bot.send_message(
                     chat_id=user_id,
-                    text=("⏱️ *Recordatorio de Media Jornada*\n\nChe, noté que todavía no registraste alimento "
-                          "ni entrenamiento hoy. ¿Te salteaste alguno o directamente todavía no cargaste nada? 🥑"),
+                    text=("⏱️ *Recordatorio de Media Jornada*\n\n¡Hola! Aún no has registrado actividad y/o alimento el día de hoy. "
+                          "No olvides hacerlo para tener un correcto análisis mensual. 🥑"),
                     parse_mode="Markdown"
                 )
             except Exception as e:
@@ -1067,15 +1084,14 @@ async def verificar_registros_23hs(context: ContextTypes.DEFAULT_TYPE):
             try:
                 await context.bot.send_message(
                     chat_id=user_id,
-                    text=("🌙 *Cierre de Jornada*\n\nNoté que desde las 14hs no sumaste ningún registro más. "
-                          "¿Se te pasó anotar algo o fue así el día? Recordá que también podés usar /ayer. ¡A descansar! 💪"),
+                    text=("🌙 *Cierre de Jornada*\n\nColega, aún no has registrado actividad y/o alimento el día de hoy. "
+                          "No olvides hacerlo para tener un correcto análisis mensual. ¡A descansar!"),
                     parse_mode="Markdown"
                 )
             except Exception as e:
                 logger.error(f"No se pudo enviar recordatorio nocturno a {user_id}: {e}")
 
 async def verificar_racha_diaria(context: ContextTypes.DEFAULT_TYPE):
-    """Corre ~00:05 hora Argentina: evalúa el día que acaba de terminar."""
     ayer = get_fecha_ayer_argentina()
     profiles = get_db(PROFILES_FILE)
     logs = get_db(LOGS_FILE)
@@ -1120,7 +1136,6 @@ async def verificar_racha_diaria(context: ContextTypes.DEFAULT_TYPE):
         save_db(PROFILES_FILE, profiles)
 
 async def resumen_semanal_job(context: ContextTypes.DEFAULT_TYPE):
-    """Domingos: manda un gráfico de la semana + resumen, solo a quien tuvo actividad."""
     profiles = get_db(PROFILES_FILE)
     logs = get_db(LOGS_FILE)
     hoy = datetime.now(ARG_TZ).date()
@@ -1175,10 +1190,10 @@ def build_application():
     application.bot_data["settings"] = settings
 
     job_queue = application.job_queue
-    job_queue.run_daily(verificar_registros_14hs, time=time(hour=17, minute=0))       # 14hs Arg
-    job_queue.run_daily(verificar_registros_23hs, time=time(hour=2, minute=0))        # 23hs Arg
-    job_queue.run_daily(verificar_racha_diaria, time=time(hour=3, minute=5))          # 00:05 Arg
-    job_queue.run_daily(resumen_semanal_job, time=time(hour=23, minute=0), days=(6,)) # domingo ~20hs Arg
+    job_queue.run_daily(verificar_registros_14hs, time=time(hour=17, minute=0))
+    job_queue.run_daily(verificar_registros_23hs, time=time(hour=2, minute=0))
+    job_queue.run_daily(verificar_racha_diaria, time=time(hour=3, minute=5))
+    job_queue.run_daily(resumen_semanal_job, time=time(hour=23, minute=0), days=(6,))
 
     _reprogramar_horarios_personalizados(application)
 
