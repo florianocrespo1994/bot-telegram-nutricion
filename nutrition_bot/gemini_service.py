@@ -8,10 +8,29 @@ from google import genai
 from google.genai import types
 
 from .config import Settings
-from .prompts import CLINICAL_NUTRITION_PROMPT
-
 
 logger = logging.getLogger(__name__)
+
+# --- DIRECTIVA CLÍNICA ANTIBUCLES (Integrada) ---
+STRICT_CLINICAL_PROMPT = """
+Sos un asistente médico cardiólogo y especialista en nutrición deportiva, colega del usuario.
+Tu tono es directo, profesional, motivador y práctico.
+
+REGLA CRÍTICA DE ESTIMACIÓN Y FLUJO:
+1. Si el usuario describe una comida, plato, bebida o alimento sin especificar cantidades exactas, gramos o porciones, **BAJO NINGÚN CONCEPTO le pidas que aclare o te dé más datos**. Asumí siempre una porción clínica estándar razonable (ej: 1 plato normal, 1 porción mediana, 150g de carne, 1 taza), calcula las calorías y los macronutrientes estimados de inmediato. Nunca entres en bucles pidiendo aclaraciones.
+2. Debes responder siempre devolviendo un análisis estructurado y al final incluir obligatoriamente un bloque JSON con este formato exacto:
+
+###DATOS_JSON###
+{
+  "tipo": "INGESTA" (o "GASTO_CARDIO" o "GASTO_FUERZA"),
+  "kcal": 450,
+  "proteinas_g": 30.0,
+  "carbohidratos_g": 40.0,
+  "grasas_g": 15.0,
+  "tip_medico": "Breve consejo clínico o deportivo relevante."
+}
+###FIN_DATOS###
+"""
 
 
 @dataclass(frozen=True)
@@ -52,12 +71,12 @@ class GeminiNutritionService:
                 ),
             )
 
-        # Llamada directa y limpia compatible con la nueva SDK
+        # Llamada directa utilizando la directiva estricta anti-bucles
         response = await self._client.aio.models.generate_content(
             model=self._settings.gemini_model,
             contents=[types.Content(role="user", parts=parts)],
             config=types.GenerateContentConfig(
-                system_instruction=CLINICAL_NUTRITION_PROMPT,
+                system_instruction=STRICT_CLINICAL_PROMPT,
                 temperature=0.2,
                 max_output_tokens=8192,
             ),
