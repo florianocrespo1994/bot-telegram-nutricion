@@ -5,6 +5,7 @@ import re
 import csv
 import io
 import random
+import threading
 from datetime import datetime, timedelta, time
 from zoneinfo import ZoneInfo
 from flask import Flask
@@ -30,9 +31,10 @@ from nutrition_bot.gemini_service import GeminiNutritionService, GeminiInput
 logging.basicConfig(format="%(asctime)s | %(levelname)s | %(message)s", level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- PERSISTENCIA ---
+# --- PERSISTENCIA Y CANDADOS (Race Conditions) ---
 PROFILES_FILE = "user_profiles.json"
 LOGS_FILE = "user_logs.json"
+db_lock = threading.Lock()
 
 ARG_TZ = ZoneInfo("America/Argentina/Buenos_Aires")
 QUECOMO_COOLDOWN_SECONDS = 30
@@ -43,9 +45,7 @@ RANGO_ALTURA = (120.0, 230.0)
 
 PISO_KCAL = {"Hombre": 1500, "Mujer": 1200}
 FACTOR_PROTEINA = {"Déficit Calorico": 2.0, "Mantenimiento": 1.6, "Volumen": 1.8}
-
 MULTIPLICADORES = {'Sedentario': 1.2, 'Leve': 1.375, 'Moderado': 1.55, 'Intenso': 1.725}
-AJUSTES = {'Déficit Calorico': -500, 'Mantenimiento': 0, 'Volumen': 500}
 
 MET_TABLE = {
     'Squash': 7.3, 'Tenis': 7.3, 'Pádel': 6.0, 'Running': 9.8,
@@ -55,7 +55,6 @@ MET_TABLE = {
     'Tenis de mesa': 4.0, 'Ajedrez': 1.5,
 }
 MET_CAMINATA = 4.3
-
 COMODINES_POR_SEMANA = 2
 
 FRASES_MOTIVACION_EXTRA = [
@@ -68,14 +67,16 @@ FRASES_MOTIVACION_EXTRA = [
 
 
 def get_db(file):
-    return json.load(open(file, "r", encoding="utf-8")) if os.path.exists(file) else {}
+    with db_lock:
+        return json.load(open(file, "r", encoding="utf-8")) if os.path.exists(file) else {}
 
 
 def save_db(file, data):
-    tmp_file = f"{file}.tmp"
-    with open(tmp_file, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=4)
-    os.replace(tmp_file, file)
+    with db_lock:
+        tmp_file = f"{file}.tmp"
+        with open(tmp_file, "w", encoding="utf-8") as f:
+            json.dump(data, f, ensure_ascii=False, indent=4)
+        os.replace(tmp_file, file)
 
 
 def extraer_calorias(texto):
@@ -127,10 +128,10 @@ def _normalizar_tipo(valor):
     if v == "GASTO_FUERZA": return "gasto_fuerza"
     return "ingesta"
 
-
+# --- FIREWALL DE INGESTA (La Regla de Oro) ---
 def extraer_datos_estructurados(texto, peso_usuario=75.0, deporte_preferido="Squash"):
     match = JSON_BLOCK_PATTERN.search(texto)
-    tipo = "ingesta"
+    tipo = "ingesta"  # Por defecto siempre es comida
     kcal = 0
     proteinas, carbohidratos, grasas = 0.0, 0.0, 0.0
     tip_medico = "Sigue prestando atención a tus porciones y actividad."
@@ -138,27 +139,41 @@ def extraer_datos_estructurados(texto, peso_usuario=75.0, deporte_preferido="Squ
     if match:
         try:
             data = json.loads(match.group(1))
-            tipo = _normalizar_tipo(data.get("tipo", "INGESTA"))
+            tipo_crudo = str(data.get("tipo", "INGESTA")).strip().upper()
+            
+            if "GASTO" in tipo_crudo:
+                tipo = _normalizar_tipo(tipo_crudo)
+            else:
+                tipo = "ingesta"
+
             kcal = int(data.get("kcal", 0) or 0)
             proteinas = float(data.get("proteinas_g", 0) or 0)
             carbohidratos = float(data.get("carbohidratos_g", 0) or 0)
             grasas = float(data.get("grasas_g", 0) or 0)
             tip_medico = str(data.get("tip_medico") or tip_medico)
         except (json.JSONDecodeError, TypeError, ValueError) as e:
-            logger.warning(f"No se pudo parsear el bloque JSON, uso fallback: {e}")
+            logger.warning(f"Error parseando JSON: {e}")
 
     if not match:
-        if "[TIPO: GASTO_CARDIO]" in texto: tipo = "gasto_cardio"
-        elif "[TIPO: GASTO_FUERZA]" in texto: tipo = "gasto_fuerza"
-        elif any(w in texto.lower() for w in ["hs", "min", "entren", "jug", "correr", "cinta", "squash", "futbol", "padel"]):
-            if tipo == "ingesta":
-                tipo = "gasto_cardio"
-
         kcal = extraer_calorias(texto)
         macros = extraer_macros(texto)
         proteinas, carbohidratos, grasas = macros["proteinas"], macros["carbohidratos"], macros["grasas"]
         tip_match = re.search(r'\[TIP_MEDICO:\s*(.*?)\]', texto, re.DOTALL)
         if tip_match: tip_medico = tip_match.group(1).strip()
+        tipo = "ingesta"
+
+    # Filtro final de seguridad: Pisamos cualquier error de la IA si detectamos comida
+    texto_lower = texto.lower()
+    palabras_comida = ["almuerzo", "cena", "desayuno", "merienda", "comí", "comia", "plato", "gramos", "grs", "gramo", "huevos", "huevo", "ensalada", "fideos", "carne", "pollo", "pan", "queso", "papa", "milanesa", "tarta", "pizza"]
+    es_entrenamiento_real = any(w in texto_lower for w in ["entren", "fui al gym", "fui al gimnasio", "jugué", "jugue al", "partido de", "corrí", "correr", "cinta", "natación", "natacion", "crossfit", "pedalear", "pedaleé"])
+
+    if any(w in texto_lower for w in palabras_comida):
+        tipo = "ingesta"
+    elif es_entrenamiento_real and not any(w in texto_lower for w in palabras_comida):
+        if "fuerza" in texto_lower or "gym" in texto_lower or "gimnasio" in texto_lower:
+            tipo = "gasto_fuerza"
+        else:
+            tipo = "gasto_cardio"
 
     if tipo in ("gasto_cardio", "gasto_fuerza") and kcal == 0:
         kcal = estimar_calorias_entrenamiento(texto, peso_usuario, deporte_preferido)
@@ -191,12 +206,19 @@ def _dia_vacio():
         "proteinas": 0.0, "carbohidratos": 0.0, "grasas": 0.0,
     }
 
-
+# --- CÁLCULO CLÍNICO METABÓLICO (Con %) ---
 def calcular_perfil_calorico(sexo, edad, peso, altura, actividad, objetivo):
     tmb = (10 * peso) + (6.25 * altura) - (5 * edad)
     tmb += 5 if sexo == 'Hombre' else -161
     gasto_diario = tmb * MULTIPLICADORES.get(actividad, 1.2)
-    kcal_calculado = gasto_diario + AJUSTES.get(objetivo, 0)
+    
+    # Cálculo porcentual clínico de calorías
+    if objetivo == 'Déficit Calorico':
+        kcal_calculado = gasto_diario * 0.80  # -20%
+    elif objetivo == 'Volumen':
+        kcal_calculado = gasto_diario * 1.10  # +10%
+    else:
+        kcal_calculado = gasto_diario
 
     piso = PISO_KCAL.get(sexo, 1200)
     aviso_piso = kcal_calculado < piso
@@ -449,7 +471,7 @@ async def guia_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "• /balance - Balance diario, incluye macros.\n"
         "• /balancegeneral - Promedios diarios y exporta Excel.\n"
         "• /eliminarultimo - Deshace el último guardado de hoy.\n"
-        "• /setobjetivo <kcal> - Cambia tu meta manualmente.\n"
+        "• /setobjetivo <kcal> - Cambia tu meta manually.\n"
         "• /reporte - Descarga tu archivo Excel."
     )
     await update.message.reply_text(guia_text, parse_mode="Markdown")
@@ -546,7 +568,6 @@ async def quecomo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     kcal_ing = user_log.get("kcal_ing", 0)
     kcal_quemadas = user_log.get("kcal_quemadas", 0)
 
-    # Cálculo clínico depurado: cuánto falta para la meta de ingesta considerando el balance neto
     balance_diario = kcal_ing - kcal_quemadas
     kcal_restantes = kcal_objetivo - balance_diario
 
@@ -735,8 +756,7 @@ async def horarios_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# --- LÓGICA DE PROCESAMIENTO DE MENSAJES (GEMINI) ---
-
+# --- SISTEMA ANTI-BUCLES Y PROCESAMIENTO ---
 async def _procesar_y_pedir_confirmacion(update: Update, context: ContextTypes.DEFAULT_TYPE,
                                           text_input: str, file_bytes, mime_type, media_label,
                                           target_date: str):
@@ -752,6 +772,11 @@ async def _procesar_y_pedir_confirmacion(update: Update, context: ContextTypes.D
 
     try:
         ai_response = await service.analyze(req)
+        
+        # Filtro Anti-Bucle: Si la IA te interroga en vez de resolver, forzamos el modo offline
+        if "describime cantidades" in ai_response.lower() or "faltan datos" in ai_response.lower():
+            raise ValueError("Gemini entró en bucle pidiendo aclaraciones.")
+
         datos = extraer_datos_estructurados(ai_response, peso_usuario=peso_usuario, deporte_preferido=deporte_preferido)
         clean_response = limpiar_respuesta(ai_response)
 
@@ -775,8 +800,37 @@ async def _procesar_y_pedir_confirmacion(update: Update, context: ContextTypes.D
             parse_mode="Markdown"
         )
     except Exception as e:
-        logger.error(f"Error Gemini: {e}")
-        await message.reply_text("¡Entendido! Lo procesé, pero por favor describime cantidades o tiempos para mayor exactitud. 💪")
+        logger.error(f"Error Gemini o Bucle detectado: {e}")
+        
+        # FALLBACK OFFLINE INTELIGENTE
+        datos_locales = extraer_datos_estructurados(text_input, peso_usuario=peso_usuario, deporte_preferido=deporte_preferido)
+        
+        if datos_locales["kcal"] > 0:
+            context.user_data["pending_analysis"] = f"⚡ *Registro Rápido (Modo Offline)*\nProcesado directamente de tu texto: _{text_input}_"
+            context.user_data["pending_tipo"] = datos_locales["tipo"]
+            context.user_data["pending_tip"] = "Trata de mantener un buen balance de hidratación."
+            context.user_data["pending_kcal"] = datos_locales["kcal"]
+            context.user_data["pending_macros"] = {
+                "proteinas": datos_locales["proteinas"], "carbohidratos": datos_locales["carbohidratos"], "grasas": datos_locales["grasas"],
+            }
+            context.user_data["pending_date"] = target_date
+
+            prefijo_fecha = "" if target_date == get_fecha_argentina() else f"🗓️ *(Se registrará con fecha {target_date})*\n\n"
+
+            await message.reply_text(
+                f"{prefijo_fecha}⚠️ *Problemas con la IA*, pero extraje los datos directamente de tu mensaje.\n\n"
+                f"Detecté **{datos_locales['kcal']} kcal** ({datos_locales['tipo'].replace('_', ' ')}).\n¿Lo guardamos para no perder la racha?",
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("✅ Guardar igual", callback_data="confirm"), InlineKeyboardButton("✏️ Editar", callback_data="edit")]
+                ]),
+                parse_mode="Markdown"
+            )
+        else:
+            await message.reply_text(
+                "¡Entendido, colega! Procesé la comida/entrenamiento, pero la IA está saturada y no pude estimar las calorías exactas automáticamente.\n\n"
+                "Para no trabarnos, **reescribí el mensaje poniéndole el número de calorías estimado al final** (ejemplo: *'fideos con verduras, 450 kcal'*). ¡Así lo guardo directo! 💪",
+                parse_mode="Markdown"
+            )
 
 
 async def handle_input(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1091,6 +1145,7 @@ async def verificar_registros_23hs(context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logger.error(f"No se pudo enviar recordatorio nocturno a {user_id}: {e}")
 
+# --- CORRECCIÓN LÓGICA DE COMODINES Y RACHA ---
 async def verificar_racha_diaria(context: ContextTypes.DEFAULT_TYPE):
     ayer = get_fecha_ayer_argentina()
     profiles = get_db(PROFILES_FILE)
@@ -1099,14 +1154,10 @@ async def verificar_racha_diaria(context: ContextTypes.DEFAULT_TYPE):
     cambios = False
 
     for user_id, perfil in profiles.items():
-        if perfil.get("semana_comodines") != lunes_actual:
-            perfil["semana_comodines"] = lunes_actual
-            perfil["comodines"] = COMODINES_POR_SEMANA
-            cambios = True
-
         dia_ayer = logs.get(user_id, {}).get(ayer, {})
         tuvo_actividad = dia_ayer.get("kcal_ing", 0) > 0 or dia_ayer.get("kcal_quemadas", 0) > 0
 
+        # 1. Evaluar si cumplió ayer y actualizar la racha O restar un comodín de la semana vieja
         if tuvo_actividad:
             perfil["racha_actual"] = perfil.get("racha_actual", 0) + 1
             cambios = True
@@ -1132,8 +1183,15 @@ async def verificar_racha_diaria(context: ContextTypes.DEFAULT_TYPE):
                 perfil["racha_actual"] = 0
                 cambios = True
 
+        # 2. Después de evaluar el domingo, SI ES LUNES, reseteamos comodines a la semana nueva
+        if perfil.get("semana_comodines") != lunes_actual:
+            perfil["semana_comodines"] = lunes_actual
+            perfil["comodines"] = COMODINES_POR_SEMANA
+            cambios = True
+
     if cambios:
         save_db(PROFILES_FILE, profiles)
+
 
 async def resumen_semanal_job(context: ContextTypes.DEFAULT_TYPE):
     profiles = get_db(PROFILES_FILE)
