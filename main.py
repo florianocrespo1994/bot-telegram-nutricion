@@ -128,10 +128,11 @@ def _normalizar_tipo(valor):
     if v == "GASTO_FUERZA": return "gasto_fuerza"
     return "ingesta"
 
-# --- FIREWALL DE INGESTA (La Regla de Oro) ---
+
+# --- FIREWALL DE INGESTA ABSOLUTO (Blindado para fotos y textos) ---
 def extraer_datos_estructurados(texto, peso_usuario=75.0, deporte_preferido="Squash"):
     match = JSON_BLOCK_PATTERN.search(texto)
-    tipo = "ingesta"  # Por defecto siempre es comida
+    tipo = "ingesta"  # Por defecto todo es comida
     kcal = 0
     proteinas, carbohidratos, grasas = 0.0, 0.0, 0.0
     tip_medico = "Sigue prestando atención a tus porciones y actividad."
@@ -162,12 +163,19 @@ def extraer_datos_estructurados(texto, peso_usuario=75.0, deporte_preferido="Squ
         if tip_match: tip_medico = tip_match.group(1).strip()
         tipo = "ingesta"
 
-    # Filtro final de seguridad: Pisamos cualquier error de la IA si detectamos comida
+    # Firewall riguroso: si hay palabras de comida, plato, bebida o análisis fotográfico, ES INGESTA SÍ O SÍ.
     texto_lower = texto.lower()
-    palabras_comida = ["almuerzo", "cena", "desayuno", "merienda", "comí", "comia", "plato", "gramos", "grs", "gramo", "huevos", "huevo", "ensalada", "fideos", "carne", "pollo", "pan", "queso", "papa", "milanesa", "tarta", "pizza"]
-    es_entrenamiento_real = any(w in texto_lower for w in ["entren", "fui al gym", "fui al gimnasio", "jugué", "jugue al", "partido de", "corrí", "correr", "cinta", "natación", "natacion", "crossfit", "pedalear", "pedaleé"])
+    palabras_comida = [
+        "almuerzo", "cena", "desayuno", "merienda", "comí", "comia", "plato", "gramos", "grs", "gramo", 
+        "huevos", "huevo", "ensalada", "fideos", "carne", "pollo", "pan", "queso", "papa", "milanesa", 
+        "tarta", "pizza", "bowl", "yogur", "granola", "banana", "café", "alimentos", "bebidas", "leche"
+    ]
+    es_entrenamiento_real = any(w in texto_lower for w in [
+        "entren", "fui al gym", "fui al gimnasio", "jugué", "jugue al", "partido de", 
+        "corrí", "correr", "cinta", "natación", "natacion", "crossfit", "pedalear", "pedaleé"
+    ])
 
-    if any(w in texto_lower for w in palabras_comida):
+    if any(w in texto_lower for w in palabras_comida) or "alimentos" in texto_lower or "bebidas" in texto_lower:
         tipo = "ingesta"
     elif es_entrenamiento_real and not any(w in texto_lower for w in palabras_comida):
         if "fuerza" in texto_lower or "gym" in texto_lower or "gimnasio" in texto_lower:
@@ -206,13 +214,13 @@ def _dia_vacio():
         "proteinas": 0.0, "carbohidratos": 0.0, "grasas": 0.0,
     }
 
+
 # --- CÁLCULO CLÍNICO METABÓLICO (Con %) ---
 def calcular_perfil_calorico(sexo, edad, peso, altura, actividad, objetivo):
     tmb = (10 * peso) + (6.25 * altura) - (5 * edad)
     tmb += 5 if sexo == 'Hombre' else -161
     gasto_diario = tmb * MULTIPLICADORES.get(actividad, 1.2)
     
-    # Cálculo porcentual clínico de calorías
     if objetivo == 'Déficit Calorico':
         kcal_calculado = gasto_diario * 0.80  # -20%
     elif objetivo == 'Volumen':
@@ -773,7 +781,6 @@ async def _procesar_y_pedir_confirmacion(update: Update, context: ContextTypes.D
     try:
         ai_response = await service.analyze(req)
         
-        # Filtro Anti-Bucle: Si la IA te interroga en vez de resolver, forzamos el modo offline
         if "describime cantidades" in ai_response.lower() or "faltan datos" in ai_response.lower():
             raise ValueError("Gemini entró en bucle pidiendo aclaraciones.")
 
@@ -802,7 +809,6 @@ async def _procesar_y_pedir_confirmacion(update: Update, context: ContextTypes.D
     except Exception as e:
         logger.error(f"Error Gemini o Bucle detectado: {e}")
         
-        # FALLBACK OFFLINE INTELIGENTE
         datos_locales = extraer_datos_estructurados(text_input, peso_usuario=peso_usuario, deporte_preferido=deporte_preferido)
         
         if datos_locales["kcal"] > 0:
@@ -1145,7 +1151,6 @@ async def verificar_registros_23hs(context: ContextTypes.DEFAULT_TYPE):
             except Exception as e:
                 logger.error(f"No se pudo enviar recordatorio nocturno a {user_id}: {e}")
 
-# --- CORRECCIÓN LÓGICA DE COMODINES Y RACHA ---
 async def verificar_racha_diaria(context: ContextTypes.DEFAULT_TYPE):
     ayer = get_fecha_ayer_argentina()
     profiles = get_db(PROFILES_FILE)
@@ -1157,7 +1162,6 @@ async def verificar_racha_diaria(context: ContextTypes.DEFAULT_TYPE):
         dia_ayer = logs.get(user_id, {}).get(ayer, {})
         tuvo_actividad = dia_ayer.get("kcal_ing", 0) > 0 or dia_ayer.get("kcal_quemadas", 0) > 0
 
-        # 1. Evaluar si cumplió ayer y actualizar la racha O restar un comodín de la semana vieja
         if tuvo_actividad:
             perfil["racha_actual"] = perfil.get("racha_actual", 0) + 1
             cambios = True
@@ -1183,7 +1187,6 @@ async def verificar_racha_diaria(context: ContextTypes.DEFAULT_TYPE):
                 perfil["racha_actual"] = 0
                 cambios = True
 
-        # 2. Después de evaluar el domingo, SI ES LUNES, reseteamos comodines a la semana nueva
         if perfil.get("semana_comodines") != lunes_actual:
             perfil["semana_comodines"] = lunes_actual
             perfil["comodines"] = COMODINES_POR_SEMANA
