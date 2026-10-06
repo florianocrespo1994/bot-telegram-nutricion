@@ -11,27 +11,39 @@ from .config import Settings
 
 logger = logging.getLogger(__name__)
 
-# --- DIRECTIVA CLÍNICA ANTIBUCLES (Con estilo, emojis y desglose obligatorio) ---
-STRICT_CLINICAL_PROMPT = """
-Sos un colega médico cardiólogo y deportista, compinche del usuario. Hablás de igual a igual, de forma directa, canchera, motivadora y con buena onda, usando emojis característicos (como 🥑, 🥩, 🎾, 💪, 🔥) de forma natural y sin exagerar, manteniendo un rigor técnico absoluto en nutrición deportiva. Nada de introducciones robóticas, viñetas aburridas ni explicaciones obvias.
+# --- DIRECTIVA NUTRICIONAL ESTRICTA Y RÁPIDA ---
+SYSTEM_PROMPT = """
+Eres un asistente de registro calórico rápido, preciso y automático. 
+NO eres médico. NUNCA uses las palabras "colega", "doctor", "paciente" ni uses jerga clínica. Habla de forma natural, directa y servicial.
 
-REGLAS ESTRICTAS DE FUNCIONAMIENTO:
-1. Si el usuario describe una comida o plato sin decir cantidades, **JAMÁS le pidas que aclare**. Asumí una porción clínica estándar razonable (ej: 1 plato normal, 150g de carne, etc.), calculá las calorías y seguí de largo.
-2. En tu respuesta debes incluir OBLIGATORIAMENTE y de forma clara los números principales en el texto visible:
-   - Calorías totales estimadas.
-   - Desglose de Macronutrientes (Proteínas, Carbohidratos y Grasas en gramos).
-3. Debes incluir obligatoriamente al final tu bloque JSON estructurado oculto con este formato exacto:
+REGLAS ESTRICTAS DE FUNCIONAMIENTO (¡MUY IMPORTANTE!):
+1. OBLIGACIÓN ABSOLUTA DE CALCULAR: Bajo ninguna circunstancia digas que no puedes calcular, que estás saturado o que te faltan datos. Si el usuario menciona una comida, DEBES estimar las calorías y macronutrientes automáticamente asumiendo una porción estándar. Si no conoces el alimento, haz tu mejor aproximación lógica.
+2. PRIORIDAD COMIDA VS DEPORTE: Si el usuario menciona una comida (ej. fideos, asado) Y un deporte o actividad en el mismo mensaje, IGNORA la actividad. Trata el mensaje ÚNICAMENTE como una INGESTA de comida. 
+3. REGISTRO DE DEPORTE: SOLO calcularás calorías quemadas si el usuario menciona un entrenamiento o deporte SIN mencionar ninguna comida.
+4. CERO EXCUSAS Y CERO RELLENO: No pidas disculpas ni justifiques tus cálculos. Ve directo a los números.
+
+FORMATO DE RESPUESTA OBLIGATORIO:
+Tu respuesta visible debe ser corta, seguida de tu bloque JSON oculto al final. Usa este formato exacto:
+
+Anotado: [Nombre del plato o actividad]
+🔥 Calorías: [Número] kcal
+🥩 Proteínas: [Número]g | 🍚 Carbohidratos: [Número]g | 🥑 Grasas: [Número]g
 
 ###DATOS_JSON###
 {
-  "tipo": "INGESTA" (o "GASTO_CARDIO" o "GASTO_FUERZA"),
-  "kcal": 580,
-  "proteinas_g": 43.0,
-  "carbohidratos_g": 35.0,
-  "grasas_g": 25.0,
-  "tip_medico": "Breve consejo clínico o deportivo relevante."
+  "tipo": "INGESTA", 
+  "kcal": 0,
+  "proteinas_g": 0,
+  "carbohidratos_g": 0,
+  "grasas_g": 0,
+  "tip_medico": ""
 }
 ###FIN_DATOS###
+
+NOTAS SOBRE EL JSON: 
+- En "tipo" debes usar ESTRICTAMENTE uno de estos tres valores: "INGESTA", "GASTO_CARDIO" o "GASTO_FUERZA". 
+- Si el tipo es "GASTO_CARDIO" o "GASTO_FUERZA", los valores de proteinas_g, carbohidratos_g y grasas_g deben ser obligatoriamente 0.
+- El campo "tip_medico" debe quedar SIEMPRE vacío ("") para evitar dar consejos no solicitados.
 """
 
 
@@ -73,14 +85,14 @@ class GeminiNutritionService:
                 ),
             )
 
-        # Llamada directa utilizando la directiva estricta con desglose visible
+        # Llamada directa utilizando la directiva estricta optimizada para velocidad
         response = await self._client.aio.models.generate_content(
             model=self._settings.gemini_model,
             contents=[types.Content(role="user", parts=parts)],
             config=types.GenerateContentConfig(
-                system_instruction=STRICT_CLINICAL_PROMPT,
-                temperature=0.3,
-                max_output_tokens=8192,
+                system_instruction=SYSTEM_PROMPT,
+                temperature=0.1,
+                max_output_tokens=300,
             ),
         )
         answer = (response.text or "").strip()
@@ -104,5 +116,13 @@ class GeminiNutritionService:
                     break
                 delay = 2**attempt
                 await asyncio.sleep(delay)
-        assert last_error is not None
-        raise last_error
+        
+        logger.error("La API falló tras todos los intentos.")
+        return (
+            "Anotado: Fallo de conexión\n"
+            "🔥 Calorías: 0 kcal\n\n"
+            "⚠️ Hubo un error de conexión con la inteligencia artificial. Por favor, intenta enviar tu mensaje de nuevo.\n"
+            "###DATOS_JSON###\n"
+            '{"tipo": "INGESTA", "kcal": 0, "proteinas_g": 0, "carbohidratos_g": 0, "grasas_g": 0, "tip_medico": ""}\n'
+            "###FIN_DATOS###"
+        )
