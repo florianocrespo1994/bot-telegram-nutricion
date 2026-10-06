@@ -62,9 +62,9 @@ async def handle_text(
         )
         return
 
-    # Adjuntar perfil al texto si existe
+    # Adjuntar perfil al texto si existe (¡CAMBIADO A 'Perfil del usuario'!)
     profile = user_profiles.get(user_id, "")
-    full_text = f"Datos del paciente: {profile}\n\nEntrada del usuario: {text}" if profile else text
+    full_text = f"Perfil del usuario: {profile}\n\nEntrada del usuario: {text}" if profile else text
 
     await _analyze_and_reply(
         update,
@@ -124,7 +124,9 @@ async def handle_media(
 
     caption = message.caption.strip() if message.caption else ""
     profile = user_profiles.get(user_id, "")
-    full_caption = f"Datos del paciente: {profile}\n\nEntrada del usuario: {caption}" if profile else caption
+    
+    # ¡CAMBIADO A 'Perfil del usuario'!
+    full_caption = f"Perfil del usuario: {profile}\n\nEntrada del usuario: {caption}" if profile else caption
 
     await _analyze_and_reply(
         update,
