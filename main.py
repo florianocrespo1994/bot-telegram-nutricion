@@ -322,8 +322,8 @@ def run_flask():
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     reply_keyboard = [['Hombre', 'Mujer']]
     await update.message.reply_text(
-        "¡Bienvenido! Soy tu asistente médico y deportivo. 🥑🎾\n\n"
-        "Vamos a configurar tu perfil clínico para calcular tus requerimientos exactos.\n"
+        "¡Bienvenido! Soy tu asistente de nutrición y entrenamiento. 🥑🎾\n\n"
+        "Vamos a configurar tu perfil para calcular tus requerimientos exactos.\n"
         "(Podés escribir /cancel en cualquier momento para salir).\n\n"
         "Para empezar, indicame tu *Sexo*:",
         reply_markup=ReplyKeyboardMarkup(reply_keyboard, one_time_keyboard=True, resize_keyboard=True),
@@ -443,7 +443,7 @@ async def finish_onboarding(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     resumen = (
-        f"✅ *¡Perfil Clínico Configurado!*\n\n"
+        f"✅ *¡Perfil Configurado!*\n\n"
         f"• *Tasa Metabólica Basal:* ~{int(resultado['tmb'])} kcal\n"
         f"• *Deporte:* {deporte}\n"
         f"🎯 *Tu objetivo calórico diario quedó seteado en: {resultado['kcal_objetivo']} kcal*\n"
@@ -592,7 +592,7 @@ async def quecomo_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         instruccion = f"Al usuario le faltan {kcal_restantes} kcal. Sugerí una opción clara y rápida para cubrir este remanente con sus calorías y macros."
 
-    prompt_bot = f"{instruccion} No uses etiquetas ocultas. Háblale directo como colega médico, sé breve y bien estructurado."
+    prompt_bot = f"{instruccion} No uses etiquetas ocultas. Háblale de forma directa, amigable, sé breve y bien estructurado."
     req = GeminiInput(text=prompt_bot, media_bytes=None, mime_type=None, media_label=None)
 
     try:
@@ -709,7 +709,7 @@ async def _chequeo_individual(context: ContextTypes.DEFAULT_TYPE, es_mediodia: b
             disparar = (kcal_ing == checkpoint.get("kcal_ing", 0) and kcal_quemadas == checkpoint.get("kcal_quemadas", 0))
         else:
             disparar = (kcal_ing == 0 and kcal_quemadas == 0)
-        texto = ("🌙 *Cierre de Jornada*\n\nColega, aún no has registrado actividad y/o alimento el día de hoy. "
+        texto = ("🌙 *Cierre de Jornada*\n\n¡Hola! Aún no has registrado actividad y/o alimento el día de hoy. "
                  "No olvides hacerlo para tener un correcto análisis mensual. ¡A descansar!")
 
     save_db(LOGS_FILE, logs)
@@ -802,7 +802,7 @@ async def _procesar_y_pedir_confirmacion(update: Update, context: ContextTypes.D
             f"{prefijo_fecha}📋 *Análisis:*\n\n{clean_response}\n\n¿Registramos esto?",
             reply_markup=InlineKeyboardMarkup([
                 [InlineKeyboardButton("✅ Confirmar", callback_data="confirm"), InlineKeyboardButton("✏️ Editar", callback_data="edit")],
-                [InlineKeyboardButton("👨‍⚕️ Tip Médico", callback_data="med_tip")]
+                [InlineKeyboardButton("👨‍⚕️ Tip", callback_data="med_tip")]
             ]),
             parse_mode="Markdown"
         )
@@ -833,7 +833,7 @@ async def _procesar_y_pedir_confirmacion(update: Update, context: ContextTypes.D
             )
         else:
             await message.reply_text(
-                "¡Entendido, colega! Procesé la comida/entrenamiento, pero la IA está saturada y no pude estimar las calorías exactas automáticamente.\n\n"
+                "¡Entendido! Procesé la información, pero hubo un problema de conexión para estimar las calorías exactas automáticamente.\n\n"
                 "Para no trabarnos, **reescribí el mensaje poniéndole el número de calorías estimado al final** (ejemplo: *'fideos con verduras, 450 kcal'*). ¡Así lo guardo directo! 💪",
                 parse_mode="Markdown"
             )
@@ -984,10 +984,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("✏️ Modo edición. Escribime la descripción corregida:")
 
     elif query.data == "med_tip":
-        tip_text = context.user_data.get("pending_tip", "Consulta siempre a tu profesional de cabecera.")
+        tip_text = context.user_data.get("pending_tip", "Trata de mantener un buen nivel de hidratación.")
         if random.random() < 0.4:
             tip_text += "\n\n" + random.choice(FRASES_MOTIVACION_EXTRA)
-        await query.message.reply_text(f"👨‍⚕️ *Perspectiva Médica y Metabólica:*\n\n{tip_text}", parse_mode="Markdown")
+        await query.message.reply_text(f"💡 *Tip de bienestar:*\n\n{tip_text}", parse_mode="Markdown")
 
     elif query.data == "download_report":
         await reporte_command(update, context)
@@ -1144,7 +1144,7 @@ async def verificar_registros_23hs(context: ContextTypes.DEFAULT_TYPE):
             try:
                 await context.bot.send_message(
                     chat_id=user_id,
-                    text=("🌙 *Cierre de Jornada*\n\nColega, aún no has registrado actividad y/o alimento el día de hoy. "
+                    text=("🌙 *Cierre de Jornada*\n\n¡Hola! Aún no has registrado actividad y/o alimento el día de hoy. "
                           "No olvides hacerlo para tener un correcto análisis mensual. ¡A descansar!"),
                     parse_mode="Markdown"
                 )
